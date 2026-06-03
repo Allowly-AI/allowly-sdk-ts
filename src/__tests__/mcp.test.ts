@@ -23,6 +23,7 @@ function makeAllowResponse() {
         isFallback: false,
         fallbackMode: null,
         budget: null,
+        escalation: null,
       },
       send_email: {
         decision: "allow" as const,
@@ -31,6 +32,7 @@ function makeAllowResponse() {
         isFallback: false,
         fallbackMode: null,
         budget: null,
+        escalation: null,
       },
     },
   };
@@ -48,6 +50,7 @@ function makeDenyResponse() {
         isFallback: false,
         fallbackMode: null,
         budget: null,
+        escalation: null,
       },
     },
   };
@@ -65,8 +68,35 @@ function makeConfirmResponse() {
         isFallback: false,
         fallbackMode: null,
         budget: null,
+        escalation: null,
         confirmNonce: "cnf_abc", confirmExpiresAt: "2026-04-20T00:15:00Z",
         confirmPromptHint: "email.send",
+      },
+    },
+  };
+}
+
+function makeEscalateResponse() {
+  return {
+    userId: "u1", agentId: "gmail-tools", authorizationId: "auth_1",
+    authorizationExpiresAt: "2026-12-31T00:00:00Z", policyVersion: "2026-04-19.1",
+    results: {
+      delete_candidate: {
+        decision: "escalate" as const,
+        reason: "escalation_required",
+        receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
+        isFallback: false,
+        fallbackMode: null,
+        budget: null,
+        escalation: {
+          escalationId: "esc_abc",
+          status: "pending",
+          escalationTo: "compliance",
+          expiresAt: "2026-04-21T17:00:00Z",
+        },
+        escalationId: "esc_abc",
+        escalationTo: "compliance",
+        escalationExpiresAt: "2026-04-21T17:00:00Z",
       },
     },
   };
@@ -148,6 +178,24 @@ describe("AllowlyMCPMiddleware — low-level Server", () => {
     expect(body.decision).toBe("confirm");
     expect(body.confirm_nonce).toBe("cnf_abc");
     expect(body.confirm_prompt_hint).toBe("email.send");
+  });
+
+  it("returns escalation payload", async () => {
+    const mw = makeMiddleware();
+    vi.spyOn(mw.client, "check").mockResolvedValue(makeEscalateResponse());
+
+    const server = makeServer();
+    mw.attach(server as any);
+
+    const handler = server.handlers.get("tools/call")!;
+    const result = await handler(makeCallToolReq("delete_candidate", { user_id: "u1" })) as any;
+
+    expect(server.originalHandler).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.decision).toBe("escalate");
+    expect(body.escalation_id).toBe("esc_abc");
+    expect(body.escalation_to).toBe("compliance");
   });
 
   it("denies when user_id is missing", async () => {

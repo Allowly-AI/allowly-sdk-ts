@@ -24,12 +24,14 @@
 import { webcrypto } from "node:crypto";
 
 const SPEC_VERSION = "1.0";
-const ACTION_DECISIONS = new Set(["allow", "deny", "confirm"]);
-const AUTHORIZATION_LIFECYCLE_EVENTS: Record<string, string> = {
-  "authorization.create": "authorization_granted",
-  "authorization.revoke": "authorization_revoked",
+const ACTION_DECISIONS = new Set(["allow", "deny", "confirm", "escalate"]);
+const EVENT_DECISIONS: Record<string, Set<string>> = {
+  "authorization.create": new Set(["authorization_granted"]),
+  "authorization.revoke": new Set(["authorization_revoked"]),
+  "escalation.resolve": new Set(["escalation_approved", "escalation_rejected"]),
 };
-const AUTHORIZATION_LIFECYCLE_DECISIONS = new Set(["authorization_granted", "authorization_revoked"]);
+const AUTHORIZATION_LIFECYCLE_EVENTS = new Set(["authorization.create", "authorization.revoke"]);
+const EVENT_ONLY_DECISIONS = new Set(Object.values(EVENT_DECISIONS).flatMap((decisions) => [...decisions]));
 const REQUIRED_FIELDS = new Set([
   "version", "receipt_id", "workspace_id", "issued_at", "decision", "reason",
   "user_id", "agent_id", "resource", "context",
@@ -191,26 +193,26 @@ export async function verifyReceipt(
     if (typeof event !== "string") {
       throw new VerificationError("event must be a string");
     }
-    if (!(event in AUTHORIZATION_LIFECYCLE_EVENTS)) {
+    if (!(event in EVENT_DECISIONS)) {
       throw new VerificationError(
-        `event must be one of ["authorization.create","authorization.revoke"], got ${JSON.stringify(event)}`,
+        `event must be one of ["authorization.create","authorization.revoke","escalation.resolve"], got ${JSON.stringify(event)}`,
       );
     }
-    const expectedDecision = AUTHORIZATION_LIFECYCLE_EVENTS[event];
-    if (r.decision !== expectedDecision) {
+    const expectedDecisions = EVENT_DECISIONS[event];
+    if (!expectedDecisions.has(r.decision)) {
       throw new VerificationError(
-        `authorization receipt with event=${JSON.stringify(event)} must have ` +
-          `decision=${JSON.stringify(expectedDecision)}, got ${JSON.stringify(r.decision)}`,
+        `event receipt with event=${JSON.stringify(event)} must have ` +
+          `decision in ${JSON.stringify([...expectedDecisions].sort())}, got ${JSON.stringify(r.decision)}`,
       );
     }
     if (r.authorization_id === null) {
       throw new VerificationError(
-        `authorization receipt with event=${JSON.stringify(event)} must have non-null authorization_id`,
+        `event receipt with event=${JSON.stringify(event)} must have non-null authorization_id`,
       );
     }
-    if (r.resource !== null) {
+    if (AUTHORIZATION_LIFECYCLE_EVENTS.has(event) && r.resource !== null) {
       throw new VerificationError(
-        `authorization receipt with event=${JSON.stringify(event)} must have null resource`,
+        `authorization lifecycle receipt with event=${JSON.stringify(event)} must have null resource`,
       );
     }
   } else {
@@ -218,16 +220,16 @@ export async function verifyReceipt(
     if (typeof scope !== "string") {
       throw new VerificationError("scope must be a string");
     }
-    if (AUTHORIZATION_LIFECYCLE_DECISIONS.has(r.decision)) {
+    if (EVENT_ONLY_DECISIONS.has(r.decision)) {
       throw new VerificationError(
-        `decision=${JSON.stringify(r.decision)} requires an authorization receipt (event field), ` +
+        `decision=${JSON.stringify(r.decision)} requires an event receipt (event field), ` +
           `got a scope receipt with scope=${JSON.stringify(scope)}`,
       );
     }
     if (!ACTION_DECISIONS.has(r.decision)) {
       throw new VerificationError(
-        `scope receipt must have decision in ["allow","confirm","deny"], ` +
-          `got ${JSON.stringify(r.decision)}`,
+        `action receipt must have decision in ["allow","confirm","deny","escalate"], ` +
+        `got ${JSON.stringify(r.decision)}`,
       );
     }
   }

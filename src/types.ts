@@ -1,4 +1,4 @@
-export type Decision = "allow" | "deny" | "confirm";
+export type Decision = "allow" | "deny" | "confirm" | "escalate";
 export type FallbackMode = "fail_open" | "fail_closed";
 
 export interface ReceiptEnvelopePending {
@@ -22,6 +22,13 @@ export interface BudgetInfo {
   spentAfterMicros?: number | null;
 }
 
+export interface EscalationInfo {
+  escalationId: string;
+  status: string;
+  escalationTo?: string | null;
+  expiresAt?: string | null;
+}
+
 export interface ScopeCheckResultBase {
   decision: Decision;
   reason: string;
@@ -29,6 +36,7 @@ export interface ScopeCheckResultBase {
   isFallback: boolean;
   fallbackMode: FallbackMode | null;
   budget: BudgetInfo | null;
+  escalation: EscalationInfo | null;
 }
 
 export interface ScopeCheckResultAllow extends ScopeCheckResultBase {
@@ -46,10 +54,18 @@ export interface ScopeCheckResultConfirm extends ScopeCheckResultBase {
   confirmPromptHint: string;
 }
 
+export interface ScopeCheckResultEscalate extends ScopeCheckResultBase {
+  decision: "escalate";
+  escalationId: string;
+  escalationTo?: string | null;
+  escalationExpiresAt?: string | null;
+}
+
 export type ScopeCheckResult =
   | ScopeCheckResultAllow
   | ScopeCheckResultDeny
-  | ScopeCheckResultConfirm;
+  | ScopeCheckResultConfirm
+  | ScopeCheckResultEscalate;
 
 export interface CheckResponse {
   authorizationId: string;
@@ -71,6 +87,8 @@ export interface AuthorizationCreateRequest {
   bundleId?: string;
   scopes?: ScopeEntry[] | string[];
   requiresConfirmFor?: string[];
+  requiresEscalationFor?: string[];
+  escalationTargets?: Record<string, string>;
   budgetLimitMicros?: number;
   expiresAt?: Date | string;
   metadata?: Record<string, unknown>;
@@ -82,6 +100,9 @@ export interface AuthorizationCreateResponse {
   createdAt: string;
   expiresAt: string;
   receipt: ReceiptEnvelopePending;
+  requiresConfirmFor: string[];
+  requiresEscalationFor: string[];
+  escalationTargets: Record<string, string>;
   budgetLimitMicros?: number;
   budgetSpentMicros?: number;
 }
@@ -101,6 +122,20 @@ export interface ConfirmationApproveResponse {
   decision: "approved" | "denied_by_user";
   authorizationId?: string;
   expiresAt?: string;
+}
+
+export interface EscalationResolveRequest {
+  resolution: "approved" | "rejected";
+  resolvedBy: string;
+  note?: string | null;
+}
+
+export interface EscalationResolveResponse {
+  escalationId: string;
+  status: "approved" | "rejected";
+  resolvedBy?: string | null;
+  resolvedAt?: string | null;
+  receipt: ReceiptEnvelopePending | null;
 }
 
 export interface AllowlyOptions {

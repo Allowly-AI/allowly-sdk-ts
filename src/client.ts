@@ -9,6 +9,9 @@ import type {
   ConfirmationApproveRequest,
   ConfirmationApproveResponse,
   BudgetInfo,
+  EscalationInfo,
+  EscalationResolveRequest,
+  EscalationResolveResponse,
   ReceiptEnvelope,
   ReceiptEnvelopePending,
   ReceiptEnvelopeSigned,
@@ -27,6 +30,7 @@ export class Allowly {
 
   readonly authorizations: AuthorizationsResource;
   readonly confirmations: ConfirmationsResource;
+  readonly escalations: EscalationsResource;
   readonly receipts: ReceiptsResource;
 
   constructor(options: AllowlyOptions) {
@@ -47,6 +51,7 @@ export class Allowly {
 
     this.authorizations = new AuthorizationsResource(this);
     this.confirmations = new ConfirmationsResource(this);
+    this.escalations = new EscalationsResource(this);
     this.receipts = new ReceiptsResource(this);
   }
 
@@ -151,6 +156,7 @@ export class Allowly {
               isFallback: true,
               fallbackMode,
               budget: null,
+              escalation: null,
             },
           ];
         })
@@ -175,6 +181,8 @@ class AuthorizationsResource {
       bundle_id: req.bundleId,
       scopes,
       requires_confirm_for: req.requiresConfirmFor ?? [],
+      requires_escalation_for: req.requiresEscalationFor ?? [],
+      escalation_targets: req.escalationTargets ?? {},
       budget_limit_micros: req.budgetLimitMicros,
       expires_at: expiresAt,
       metadata: req.metadata ?? {},
@@ -185,6 +193,9 @@ class AuthorizationsResource {
       createdAt: raw.created_at as string,
       expiresAt: raw.expires_at as string,
       receipt: parsePendingEnvelope(raw.receipt as Record<string, unknown>),
+      requiresConfirmFor: (raw.requires_confirm_for as string[] | undefined) ?? [],
+      requiresEscalationFor: (raw.requires_escalation_for as string[] | undefined) ?? [],
+      escalationTargets: (raw.escalation_targets as Record<string, string> | undefined) ?? {},
       budgetLimitMicros: raw.budget_limit_micros as number | undefined,
       budgetSpentMicros: raw.budget_spent_micros as number | undefined,
     };
@@ -224,6 +235,43 @@ class ConfirmationsResource {
       authorizationId: raw.authorization_id as string | undefined,
       expiresAt: raw.expires_at as string | undefined,
     };
+  }
+}
+
+class EscalationsResource {
+  constructor(private readonly client: Allowly) {}
+
+  async resolve(escalationId: string, req: EscalationResolveRequest): Promise<EscalationResolveResponse> {
+    const raw = await this.client.request<Record<string, unknown>>(
+      "POST",
+      `/v1/escalations/${escalationId}/resolve`,
+      {
+        resolution: req.resolution,
+        resolved_by: req.resolvedBy,
+        note: req.note ?? null,
+      }
+    );
+    return {
+      escalationId: raw.escalation_id as string,
+      status: raw.status as "approved" | "rejected",
+      resolvedBy: raw.resolved_by as string | null | undefined,
+      resolvedAt: raw.resolved_at as string | null | undefined,
+      receipt: raw.receipt ? parsePendingEnvelope(raw.receipt as Record<string, unknown>) : null,
+    };
+  }
+
+  async approve(
+    escalationId: string,
+    req: Omit<EscalationResolveRequest, "resolution">
+  ): Promise<EscalationResolveResponse> {
+    return this.resolve(escalationId, { ...req, resolution: "approved" });
+  }
+
+  async reject(
+    escalationId: string,
+    req: Omit<EscalationResolveRequest, "resolution">
+  ): Promise<EscalationResolveResponse> {
+    return this.resolve(escalationId, { ...req, resolution: "rejected" });
   }
 }
 
@@ -269,7 +317,7 @@ function parseReceiptEnvelope(raw: Record<string, unknown>): ReceiptEnvelope {
 
 function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
   // The API returns a map keyed by requested scope. Preserve those keys so
-  // callers can safely handle mixed allow/deny/confirm results in one check.
+  // callers can safely handle mixed allow/deny/confirm/escalate results in one check.
   return {
     userId: raw.user_id as string,
     agentId: raw.agent_id as string,
@@ -286,9 +334,13 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
           isFallback: Boolean(result.is_fallback ?? false),
           fallbackMode: (result.fallback_mode as FallbackMode | null | undefined) ?? null,
           budget: parseBudgetInfo(result.budget),
+          escalation: parseEscalationInfo(result.escalation),
           confirmNonce: result.confirm_nonce,
           confirmExpiresAt: result.confirm_expires_at,
           confirmPromptHint: result.confirm_prompt_hint,
+          escalationId: result.escalation_id,
+          escalationTo: result.escalation_to,
+          escalationExpiresAt: result.escalation_expires_at,
         },
       ])
     ) as CheckResponse["results"],
@@ -303,6 +355,17 @@ function parseBudgetInfo(raw: unknown): BudgetInfo | null {
     spentMicros: budget.spent_micros as number,
     estimatedCostMicros: budget.estimated_cost_micros as number,
     spentAfterMicros: (budget.spent_after_micros as number | undefined) ?? null,
+  };
+}
+
+function parseEscalationInfo(raw: unknown): EscalationInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const escalation = raw as Record<string, unknown>;
+  return {
+    escalationId: escalation.escalation_id as string,
+    status: escalation.status as string,
+    escalationTo: (escalation.escalation_to as string | undefined) ?? null,
+    expiresAt: (escalation.expires_at as string | undefined) ?? null,
   };
 }
 

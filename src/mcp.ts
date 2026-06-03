@@ -15,7 +15,7 @@
  *   allowly.attach(server);
  */
 import { Allowly } from "./client.js";
-import type { ScopeCheckResultConfirm } from "./types.js";
+import type { ScopeCheckResultConfirm, ScopeCheckResultEscalate } from "./types.js";
 
 type AuthorizationIdFn = (userId: string) => string | null | Promise<string | null>;
 
@@ -91,6 +91,23 @@ export class AllowlyMCPMiddleware {
               reason: c.reason,
               confirm_nonce: c.confirmNonce,
               confirm_prompt_hint: c.confirmPromptHint,
+            }),
+          }],
+          isError: true,
+        };
+      }
+
+      if (scopeResult.decision === "escalate") {
+        const e = scopeResult as ScopeCheckResultEscalate;
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              decision: "escalate",
+              reason: e.reason,
+              escalation_id: e.escalationId,
+              escalation_to: e.escalationTo,
+              escalation_expires_at: e.escalationExpiresAt,
             }),
           }],
           isError: true,

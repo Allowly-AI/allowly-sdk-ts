@@ -84,6 +84,32 @@ describe("Allowly.check", () => {
     if (scope.decision === "confirm") expect(scope.confirmNonce).toBe("cnf_abc");
   });
 
+  it("returns escalate with escalation metadata", async () => {
+    const fetch = makeFetch(200, checkBody("candidate.delete", {
+      decision: "escalate",
+      reason: "escalation_required",
+      escalation_id: "esc_abc",
+      escalation_to: "compliance",
+      escalation_expires_at: "2026-04-21T17:00:00Z",
+      escalation: {
+        escalation_id: "esc_abc",
+        status: "pending",
+        escalation_to: "compliance",
+        expires_at: "2026-04-21T17:00:00Z",
+      },
+      receipt: PENDING_RECEIPT,
+    }, { authorization_id: "auth_esc" }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.check({ authorizationId: "auth_esc", scopes: ["candidate.delete"] });
+    const scope = res.results["candidate.delete"];
+    expect(scope.decision).toBe("escalate");
+    if (scope.decision === "escalate") {
+      expect(scope.escalationId).toBe("esc_abc");
+      expect(scope.escalationTo).toBe("compliance");
+      expect(scope.escalation?.status).toBe("pending");
+    }
+  });
+
   it("throws AllowlyAPIError on 401", async () => {
     const fetch = makeFetch(401, { error: { code: "unauthorized", message: "Invalid or revoked API key" } });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -303,6 +329,32 @@ describe("Allowly.authorizations.create", () => {
     expect(res.budgetSpentMicros).toBe(0);
   });
 
+  it("sends and parses escalation fields", async () => {
+    const fetch = makeFetch(201, {
+      authorization_id: "auth_esc",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      requires_escalation_for: ["candidate.delete"],
+      escalation_targets: { "candidate.delete": "compliance" },
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.authorizations.create({
+      userId: "u1",
+      agentId: "a1",
+      scopes: ["candidate.delete"],
+      requiresEscalationFor: ["candidate.delete"],
+      escalationTargets: { "candidate.delete": "compliance" },
+    });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.requires_escalation_for).toEqual(["candidate.delete"]);
+    expect(body.escalation_targets).toEqual({ "candidate.delete": "compliance" });
+    expect(res.requiresEscalationFor).toEqual(["candidate.delete"]);
+    expect(res.escalationTargets).toEqual({ "candidate.delete": "compliance" });
+  });
+
   it("does not send session_id", async () => {
     const fetch = makeFetch(201, {
       authorization_id: "auth_new", created_at: "2026-04-20T00:00:00Z",
@@ -368,6 +420,45 @@ describe("Allowly.confirmations", () => {
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.confirmations.approve("nonce123", { approved: false });
     expect(res.decision).toBe("denied_by_user");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// escalations.resolve()
+// ---------------------------------------------------------------------------
+
+describe("Allowly.escalations", () => {
+  it("approves an escalation", async () => {
+    const fetch = makeFetch(200, {
+      escalation_id: "esc_abc",
+      status: "approved",
+      resolved_by: "compliance:1",
+      resolved_at: "2026-04-21T16:15:00Z",
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.escalations.approve("esc_abc", { resolvedBy: "compliance:1", note: "ok" });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).toEqual({ resolution: "approved", resolved_by: "compliance:1", note: "ok" });
+    expect(res.escalationId).toBe("esc_abc");
+    expect(res.status).toBe("approved");
+    expect(res.receipt?.status).toBe("pending");
+  });
+
+  it("handles idempotent reject without a new receipt", async () => {
+    const fetch = makeFetch(200, {
+      escalation_id: "esc_abc",
+      status: "rejected",
+      resolved_by: "compliance:1",
+      resolved_at: "2026-04-21T16:15:00Z",
+      receipt: null,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.escalations.reject("esc_abc", { resolvedBy: "compliance:1" });
+    expect(res.status).toBe("rejected");
+    expect(res.receipt).toBeNull();
   });
 });
 
