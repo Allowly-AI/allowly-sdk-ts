@@ -47,8 +47,10 @@ describe("Allowly.check", () => {
     const scope = res.results["email.read"];
 
     expect(scope.decision).toBe("allow");
-    expect(scope.receipt.status).toBe("pending");
-    if (scope.receipt.status === "pending") {
+    expect(scope.isFallback).toBe(false);
+    expect(scope.fallbackMode).toBeNull();
+    expect(scope.receipt?.status).toBe("pending");
+    if (scope.receipt?.status === "pending") {
       expect(scope.receipt.receiptId).toBe("rcp_abc");
     }
     if (scope.decision === "allow") {
@@ -105,6 +107,123 @@ describe("Allowly.check", () => {
     expect(body).not.toHaveProperty("session_id");
     expect(body.scopes).toEqual(["x"]);
   });
+
+  it("returns fail_open fallback on timeout", async () => {
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    const fetch = vi.fn().mockRejectedValue(abortError);
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      checkTimeoutMs: 1,
+      fallbackByScope: { "public.web.search": "fail_open" },
+    });
+
+    const res = await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
+    const scope = res.results["public.web.search"];
+
+    expect(scope.decision).toBe("allow");
+    expect(scope.reason).toBe("fallback_open_timeout");
+    expect(scope.isFallback).toBe(true);
+    expect(scope.fallbackMode).toBe("fail_open");
+    expect(scope.receipt).toBeNull();
+    expect(res.authorizationId).toBe("auth_1");
+    expect(res.policyVersion).toBe("sdk_fallback");
+  });
+
+  it("uses default fail_closed fallback for unmapped timeout scope", async () => {
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    const fetch = vi.fn().mockRejectedValue(abortError);
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, checkTimeoutMs: 1 });
+
+    const res = await client.check({ authorizationId: "auth_1", scopes: ["email.send"] });
+    const scope = res.results["email.send"];
+
+    expect(scope.decision).toBe("deny");
+    expect(scope.reason).toBe("fallback_closed_timeout");
+    expect(scope.isFallback).toBe(true);
+    expect(scope.fallbackMode).toBe("fail_closed");
+    expect(scope.receipt).toBeNull();
+  });
+
+  it("returns fail_open fallback on connection error", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("offline"));
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByScope: { "public.web.search": "fail_open" },
+    });
+
+    const res = await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
+    const scope = res.results["public.web.search"];
+
+    expect(scope.decision).toBe("allow");
+    expect(scope.reason).toBe("fallback_open_unreachable");
+    expect(scope.isFallback).toBe(true);
+    expect(scope.fallbackMode).toBe("fail_open");
+    expect(scope.receipt).toBeNull();
+  });
+
+  it("returns fail_closed fallback on 5xx", async () => {
+    const fetch = makeFetch(503, { error: { code: "unavailable", message: "try again" } });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    const res = await client.check({ authorizationId: "auth_1", scopes: ["email.send"] });
+    const scope = res.results["email.send"];
+
+    expect(scope.decision).toBe("deny");
+    expect(scope.reason).toBe("fallback_closed_unreachable");
+    expect(scope.isFallback).toBe(true);
+    expect(scope.fallbackMode).toBe("fail_closed");
+    expect(scope.receipt).toBeNull();
+  });
+
+  it("supports mixed fallback modes in one check", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("offline"));
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByScope: {
+        "public.web.search": "fail_open",
+        "email.send": "fail_closed",
+      },
+    });
+
+    const res = await client.check({
+      authorizationId: "auth_1",
+      scopes: ["public.web.search", "email.send"],
+    });
+
+    expect(res.results["public.web.search"].decision).toBe("allow");
+    expect(res.results["public.web.search"].reason).toBe("fallback_open_unreachable");
+    expect(res.results["email.send"].decision).toBe("deny");
+    expect(res.results["email.send"].reason).toBe("fallback_closed_unreachable");
+  });
+
+  it("does not fallback on 429", async () => {
+    const fetch = makeFetch(429, { error: { code: "quota_exceeded", message: "quota exceeded" } });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByScope: { "public.web.search": "fail_open" },
+    });
+
+    await expect(client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] }))
+      .rejects.toMatchObject({ status: 429, code: "quota_exceeded" });
+  });
+
+  it("does not cache fallback results", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("offline"));
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByScope: { "public.web.search": "fail_open" },
+    });
+
+    await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
+    await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -142,6 +261,21 @@ describe("Allowly.authorizations.create", () => {
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).not.toHaveProperty("session_id");
+  });
+
+  it("does not use fallback behavior", async () => {
+    const fetch = makeFetch(503, { error: { code: "unavailable", message: "try again" } });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByScope: { "email.read": "fail_open" },
+    });
+
+    await expect(client.authorizations.create({
+      userId: "u1",
+      agentId: "a1",
+      scopes: ["email.read"],
+    })).rejects.toMatchObject({ status: 503, code: "unavailable" });
   });
 });
 

@@ -24,6 +24,7 @@ export type {
   ReceiptEnvelopePending,
   ReceiptEnvelopeSigned,
   Decision,
+  FallbackMode,
   ScopeEntry,
   AllowlyError,
 } from "./types.js";

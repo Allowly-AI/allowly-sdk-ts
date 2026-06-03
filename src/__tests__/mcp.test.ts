@@ -20,11 +20,15 @@ function makeAllowResponse() {
         decision: "allow" as const,
         reason: "authorization_granted_scope_active",
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
+        isFallback: false,
+        fallbackMode: null,
       },
       send_email: {
         decision: "allow" as const,
         reason: "authorization_granted_scope_active",
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
+        isFallback: false,
+        fallbackMode: null,
       },
     },
   };
@@ -39,6 +43,8 @@ function makeDenyResponse() {
         decision: "deny" as const,
         reason: "authorization_not_found",
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
+        isFallback: false,
+        fallbackMode: null,
       },
     },
   };
@@ -53,6 +59,8 @@ function makeConfirmResponse() {
         decision: "confirm" as const,
         reason: "scope_requires_user_confirmation",
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
+        isFallback: false,
+        fallbackMode: null,
         confirmNonce: "cnf_abc", confirmExpiresAt: "2026-04-20T00:15:00Z",
         confirmPromptHint: "email.send",
       },

@@ -2,6 +2,7 @@ import { AllowlyAPIError } from "./error.js";
 import type {
   AllowlyOptions,
   CheckResponse,
+  FallbackMode,
   AuthorizationCreateRequest,
   AuthorizationCreateResponse,
   AuthorizationRevokeResponse,
@@ -13,11 +14,15 @@ import type {
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.allowly.ai";
+const DEFAULT_CHECK_TIMEOUT_MS = 1000;
 
 export class Allowly {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly _fetch: typeof globalThis.fetch;
+  private readonly checkTimeoutMs: number;
+  private readonly defaultFallback: FallbackMode;
+  private readonly fallbackByScope: Record<string, FallbackMode>;
 
   readonly authorizations: AuthorizationsResource;
   readonly confirmations: ConfirmationsResource;
@@ -27,6 +32,17 @@ export class Allowly {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
     this._fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.checkTimeoutMs = options.checkTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
+    if (this.checkTimeoutMs <= 0) {
+      throw new Error("checkTimeoutMs must be positive");
+    }
+    this.defaultFallback = validateFallbackMode(options.defaultFallback ?? "fail_closed");
+    this.fallbackByScope = Object.fromEntries(
+      Object.entries(options.fallbackByScope ?? {}).map(([scope, mode]) => [
+        scope,
+        validateFallbackMode(mode),
+      ])
+    );
 
     this.authorizations = new AuthorizationsResource(this);
     this.confirmations = new ConfirmationsResource(this);
@@ -34,7 +50,12 @@ export class Allowly {
   }
 
   /** @internal */
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    opts: { signal?: AbortSignal } = {}
+  ): Promise<T> {
     const res = await this._fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
@@ -42,6 +63,7 @@ export class Allowly {
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: opts.signal,
     });
 
     if (res.status === 204) return undefined as T;
@@ -65,14 +87,71 @@ export class Allowly {
     wait?: boolean;
   }): Promise<CheckResponse> {
     const path = "/v1/check" + (req.wait ? "?wait=true" : "");
-    const raw = await this.request<Record<string, unknown>>("POST", path, {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.checkTimeoutMs);
+    const body = {
       authorization_id: req.authorizationId,
       scopes: req.scopes,
       resource: req.resource,
       session_id: req.sessionId,
       context: req.context ?? {},
-    });
-    return parseCheckResponse(raw);
+    };
+    try {
+      const raw = await this.request<Record<string, unknown>>("POST", path, body, {
+        signal: controller.signal,
+      });
+      return parseCheckResponse(raw);
+    } catch (err) {
+      if (isAbortError(err)) {
+        return this.fallbackCheckResponse(req.authorizationId, req.scopes, "timeout");
+      }
+      if (err instanceof AllowlyAPIError) {
+        if (err.status >= 500) {
+          return this.fallbackCheckResponse(req.authorizationId, req.scopes, "unreachable");
+        }
+        throw err;
+      }
+      if (err instanceof TypeError) {
+        return this.fallbackCheckResponse(req.authorizationId, req.scopes, "unreachable");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private fallbackModeForScope(scope: string): FallbackMode {
+    return this.fallbackByScope[scope] ?? this.defaultFallback;
+  }
+
+  private fallbackCheckResponse(
+    authorizationId: string,
+    scopes: string[],
+    failure: "timeout" | "unreachable"
+  ): CheckResponse {
+    return {
+      authorizationId,
+      userId: null,
+      agentId: null,
+      authorizationExpiresAt: null,
+      policyVersion: "sdk_fallback",
+      results: Object.fromEntries(
+        scopes.map((scope) => {
+          const fallbackMode = this.fallbackModeForScope(scope);
+          const opened = fallbackMode === "fail_open";
+          return [
+            scope,
+            {
+              decision: opened ? "allow" : "deny",
+              reason: `fallback_${opened ? "open" : "closed"}_${failure}`,
+              receipt: null,
+              isFallback: true,
+              fallbackMode,
+            },
+          ];
+        })
+      ) as CheckResponse["results"],
+    };
   }
 }
 
@@ -197,6 +276,8 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
           decision: result.decision,
           reason: result.reason,
           receipt: parseReceiptEnvelope(result.receipt as Record<string, unknown>),
+          isFallback: Boolean(result.is_fallback ?? false),
+          fallbackMode: (result.fallback_mode as FallbackMode | null | undefined) ?? null,
           confirmNonce: result.confirm_nonce,
           confirmExpiresAt: result.confirm_expires_at,
           confirmPromptHint: result.confirm_prompt_hint,
@@ -204,6 +285,22 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
       ])
     ) as CheckResponse["results"],
   };
+}
+
+function validateFallbackMode(mode: string): FallbackMode {
+  if (mode !== "fail_open" && mode !== "fail_closed") {
+    throw new Error("fallback mode must be 'fail_open' or 'fail_closed'");
+  }
+  return mode;
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "name" in err &&
+    (err as { name?: string }).name === "AbortError"
+  );
 }
 
 function sleep(ms: number): Promise<void> {

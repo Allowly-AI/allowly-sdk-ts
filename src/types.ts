@@ -1,4 +1,5 @@
 export type Decision = "allow" | "deny" | "confirm";
+export type FallbackMode = "fail_open" | "fail_closed";
 
 export interface ReceiptEnvelopePending {
   status: "pending";
@@ -17,7 +18,9 @@ export type ReceiptEnvelope = ReceiptEnvelopePending | ReceiptEnvelopeSigned;
 export interface ScopeCheckResultBase {
   decision: Decision;
   reason: string;
-  receipt: ReceiptEnvelope;
+  receipt: ReceiptEnvelope | null;
+  isFallback: boolean;
+  fallbackMode: FallbackMode | null;
 }
 
 export interface ScopeCheckResultAllow extends ScopeCheckResultBase {
@@ -93,6 +96,9 @@ export interface AllowlyOptions {
   apiKey: string;
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
+  checkTimeoutMs?: number;
+  defaultFallback?: FallbackMode;
+  fallbackByScope?: Record<string, FallbackMode>;
 }
 
 export interface FetchKeysDocOptions {
