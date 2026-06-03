@@ -8,6 +8,7 @@ import type {
   AuthorizationRevokeResponse,
   ConfirmationApproveRequest,
   ConfirmationApproveResponse,
+  BudgetInfo,
   ReceiptEnvelope,
   ReceiptEnvelopePending,
   ReceiptEnvelopeSigned,
@@ -83,6 +84,7 @@ export class Allowly {
     scopes: string[];
     resource?: string;
     sessionId?: string;
+    estimatedCostMicros?: number;
     context?: Record<string, unknown>;
     wait?: boolean;
   }): Promise<CheckResponse> {
@@ -94,6 +96,7 @@ export class Allowly {
       scopes: req.scopes,
       resource: req.resource,
       session_id: req.sessionId,
+      estimated_cost_micros: req.estimatedCostMicros,
       context: req.context ?? {},
     };
     try {
@@ -147,6 +150,7 @@ export class Allowly {
               receipt: null,
               isFallback: true,
               fallbackMode,
+              budget: null,
             },
           ];
         })
@@ -171,6 +175,7 @@ class AuthorizationsResource {
       bundle_id: req.bundleId,
       scopes,
       requires_confirm_for: req.requiresConfirmFor ?? [],
+      budget_limit_micros: req.budgetLimitMicros,
       expires_at: expiresAt,
       metadata: req.metadata ?? {},
     });
@@ -180,6 +185,8 @@ class AuthorizationsResource {
       createdAt: raw.created_at as string,
       expiresAt: raw.expires_at as string,
       receipt: parsePendingEnvelope(raw.receipt as Record<string, unknown>),
+      budgetLimitMicros: raw.budget_limit_micros as number | undefined,
+      budgetSpentMicros: raw.budget_spent_micros as number | undefined,
     };
   }
 
@@ -278,12 +285,24 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
           receipt: parseReceiptEnvelope(result.receipt as Record<string, unknown>),
           isFallback: Boolean(result.is_fallback ?? false),
           fallbackMode: (result.fallback_mode as FallbackMode | null | undefined) ?? null,
+          budget: parseBudgetInfo(result.budget),
           confirmNonce: result.confirm_nonce,
           confirmExpiresAt: result.confirm_expires_at,
           confirmPromptHint: result.confirm_prompt_hint,
         },
       ])
     ) as CheckResponse["results"],
+  };
+}
+
+function parseBudgetInfo(raw: unknown): BudgetInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const budget = raw as Record<string, unknown>;
+  return {
+    limitMicros: budget.limit_micros as number,
+    spentMicros: budget.spent_micros as number,
+    estimatedCostMicros: budget.estimated_cost_micros as number,
+    spentAfterMicros: (budget.spent_after_micros as number | undefined) ?? null,
   };
 }
 

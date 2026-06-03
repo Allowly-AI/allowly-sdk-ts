@@ -22,6 +22,7 @@ function makeAllowResponse() {
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
         isFallback: false,
         fallbackMode: null,
+        budget: null,
       },
       send_email: {
         decision: "allow" as const,
@@ -29,6 +30,7 @@ function makeAllowResponse() {
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
         isFallback: false,
         fallbackMode: null,
+        budget: null,
       },
     },
   };
@@ -45,6 +47,7 @@ function makeDenyResponse() {
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
         isFallback: false,
         fallbackMode: null,
+        budget: null,
       },
     },
   };
@@ -61,6 +64,7 @@ function makeConfirmResponse() {
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
         isFallback: false,
         fallbackMode: null,
+        budget: null,
         confirmNonce: "cnf_abc", confirmExpiresAt: "2026-04-20T00:15:00Z",
         confirmPromptHint: "email.send",
       },

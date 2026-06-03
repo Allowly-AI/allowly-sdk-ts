@@ -49,6 +49,7 @@ describe("Allowly.check", () => {
     expect(scope.decision).toBe("allow");
     expect(scope.isFallback).toBe(false);
     expect(scope.fallbackMode).toBeNull();
+    expect(scope.budget).toBeNull();
     expect(scope.receipt?.status).toBe("pending");
     if (scope.receipt?.status === "pending") {
       expect(scope.receipt.receiptId).toBe("rcp_abc");
@@ -101,11 +102,38 @@ describe("Allowly.check", () => {
   it("does not send session_id", async () => {
     const fetch = makeFetch(200, checkBody("x", { decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    await client.check({ authorizationId: "auth_1", scopes: ["x"] });
+    await client.check({ authorizationId: "auth_1", scopes: ["x"], estimatedCostMicros: 12345 });
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).not.toHaveProperty("session_id");
+    expect(body.estimated_cost_micros).toBe(12345);
     expect(body.scopes).toEqual(["x"]);
+  });
+
+  it("parses budget results", async () => {
+    const fetch = makeFetch(200, checkBody("llm.enrich", {
+      decision: "allow",
+      reason: "authorization_granted_scope_active",
+      receipt: PENDING_RECEIPT,
+      budget: {
+        limit_micros: 1_000_000,
+        spent_micros: 100_000,
+        estimated_cost_micros: 25_000,
+        spent_after_micros: 125_000,
+      },
+    }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.check({
+      authorizationId: "auth_1",
+      scopes: ["llm.enrich"],
+      estimatedCostMicros: 25_000,
+    });
+    expect(res.results["llm.enrich"].budget).toEqual({
+      limitMicros: 1_000_000,
+      spentMicros: 100_000,
+      estimatedCostMicros: 25_000,
+      spentAfterMicros: 125_000,
+    });
   });
 
   it("returns fail_open fallback on timeout", async () => {
@@ -126,6 +154,7 @@ describe("Allowly.check", () => {
     expect(scope.isFallback).toBe(true);
     expect(scope.fallbackMode).toBe("fail_open");
     expect(scope.receipt).toBeNull();
+    expect(scope.budget).toBeNull();
     expect(res.authorizationId).toBe("auth_1");
     expect(res.policyVersion).toBe("sdk_fallback");
   });
@@ -247,6 +276,31 @@ describe("Allowly.authorizations.create", () => {
     expect(res.authorizationId).toBe("auth_new");
     expect(res.receipt.status).toBe("pending");
     expect(res.receipt.receiptId).toBe("rcp_abc");
+  });
+
+  it("sends and parses budget fields", async () => {
+    const fetch = makeFetch(201, {
+      authorization_id: "auth_budget",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      budget_limit_micros: 50_000_000,
+      budget_spent_micros: 0,
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.authorizations.create({
+      userId: "u1",
+      agentId: "a1",
+      scopes: ["llm.enrich"],
+      budgetLimitMicros: 50_000_000,
+    });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.budget_limit_micros).toBe(50_000_000);
+    expect(res.authorizationId).toBe("auth_budget");
+    expect(res.budgetLimitMicros).toBe(50_000_000);
+    expect(res.budgetSpentMicros).toBe(0);
   });
 
   it("does not send session_id", async () => {

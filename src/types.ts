@@ -15,12 +15,20 @@ export interface ReceiptEnvelopeSigned {
 
 export type ReceiptEnvelope = ReceiptEnvelopePending | ReceiptEnvelopeSigned;
 
+export interface BudgetInfo {
+  limitMicros: number;
+  spentMicros: number;
+  estimatedCostMicros: number;
+  spentAfterMicros?: number | null;
+}
+
 export interface ScopeCheckResultBase {
   decision: Decision;
   reason: string;
   receipt: ReceiptEnvelope | null;
   isFallback: boolean;
   fallbackMode: FallbackMode | null;
+  budget: BudgetInfo | null;
 }
 
 export interface ScopeCheckResultAllow extends ScopeCheckResultBase {
@@ -63,6 +71,7 @@ export interface AuthorizationCreateRequest {
   bundleId?: string;
   scopes?: ScopeEntry[] | string[];
   requiresConfirmFor?: string[];
+  budgetLimitMicros?: number;
   expiresAt?: Date | string;
   metadata?: Record<string, unknown>;
 }
@@ -73,6 +82,8 @@ export interface AuthorizationCreateResponse {
   createdAt: string;
   expiresAt: string;
   receipt: ReceiptEnvelopePending;
+  budgetLimitMicros?: number;
+  budgetSpentMicros?: number;
 }
 
 export interface AuthorizationRevokeResponse {

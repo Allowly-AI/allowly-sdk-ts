@@ -10,6 +10,7 @@ export {
 } from "./verify.js";
 export type {
   AllowlyOptions,
+  BudgetInfo,
   CheckResponse,
   ScopeCheckResult,
   ScopeCheckResultAllow,
