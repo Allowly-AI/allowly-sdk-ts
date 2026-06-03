@@ -36,6 +36,21 @@ function checkBody(scope: string, result: Record<string, unknown>, extra: Record
 // ---------------------------------------------------------------------------
 
 describe("Allowly.check", () => {
+  it("rejects insecure base URLs by default", () => {
+    expect(() => new Allowly({ apiKey: "test-key", baseUrl: "http://api.example.com" }))
+      .toThrow("HTTPS");
+  });
+
+  it("allows insecure base URLs only with explicit opt-in", () => {
+    expect(() =>
+      new Allowly({
+        apiKey: "test-key",
+        baseUrl: "http://localhost:8000",
+        dangerouslyAllowInsecureBaseUrl: true,
+      }),
+    ).not.toThrow();
+  });
+
   it("returns allow with pending receipt envelope", async () => {
     const fetch = makeFetch(200, checkBody("email.read", {
       decision: "allow",

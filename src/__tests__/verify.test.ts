@@ -84,6 +84,18 @@ describe("fetchKeysDoc", () => {
       }),
     ).rejects.toThrow("SHA-256");
   });
+
+  it("rejects workspace_id mismatches", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ...VALID_DOC, workspace_id: "ws_other" }),
+    });
+
+    await expect(
+      fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com" }),
+    ).rejects.toThrow("workspace_id mismatch");
+  });
 });
 
 describe("loadKeysFromJson", () => {

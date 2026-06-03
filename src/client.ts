@@ -35,7 +35,10 @@ export class Allowly {
 
   constructor(options: AllowlyOptions) {
     this.apiKey = options.apiKey;
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+    this.baseUrl = validateBaseUrl(
+      options.baseUrl ?? DEFAULT_BASE_URL,
+      options.dangerouslyAllowInsecureBaseUrl ?? false,
+    );
     this._fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.checkTimeoutMs = options.checkTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
     if (this.checkTimeoutMs <= 0) {
@@ -374,6 +377,20 @@ function validateFallbackMode(mode: string): FallbackMode {
     throw new Error("fallback mode must be 'fail_open' or 'fail_closed'");
   }
   return mode;
+}
+
+function validateBaseUrl(baseUrl: string, allowInsecure: boolean): string {
+  const normalized = baseUrl.replace(/\/$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("baseUrl must be a valid URL");
+  }
+  if (parsed.protocol !== "https:" && !allowInsecure) {
+    throw new Error("baseUrl must use HTTPS");
+  }
+  return normalized;
 }
 
 function isAbortError(err: unknown): boolean {

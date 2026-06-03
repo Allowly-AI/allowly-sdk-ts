@@ -79,6 +79,11 @@ export async function fetchKeysDoc(
   } catch {
     throw new VerificationError("keys document was not valid JSON");
   }
+  if (doc.workspace_id !== workspaceId) {
+    throw new VerificationError(
+      `keys document workspace_id mismatch: got ${JSON.stringify(doc.workspace_id)}, want ${JSON.stringify(workspaceId)}`,
+    );
+  }
   loadKeysFromJson(doc);
   _keysDocCache.set(cacheKey, { expiresAt: Date.now() + ttlMs, doc });
   return structuredClone(doc);

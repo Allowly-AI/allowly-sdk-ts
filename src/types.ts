@@ -141,6 +141,7 @@ export interface EscalationResolveResponse {
 export interface AllowlyOptions {
   apiKey: string;
   baseUrl?: string;
+  dangerouslyAllowInsecureBaseUrl?: boolean;
   fetch?: typeof globalThis.fetch;
   checkTimeoutMs?: number;
   defaultFallback?: FallbackMode;

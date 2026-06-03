@@ -102,14 +102,22 @@ function makeEscalateResponse() {
   };
 }
 
-function makeCallToolReq(name: string, args: Record<string, unknown> = {}) {
-  return { params: { name, arguments: args } };
+function makeCallToolReq(name: string, args: Record<string, unknown> = {}, authenticatedUserId: string | null = "u1") {
+  const req: { params: { name: string; arguments: Record<string, unknown> }; meta?: { authenticatedUserId: string } } = {
+    params: { name, arguments: args },
+  };
+  if (authenticatedUserId) req.meta = { authenticatedUserId };
+  return req;
 }
 
 function makeMiddleware(authorizationIdFn = (userId: string) => userId ? "auth_1" : null) {
   const mw = new AllowlyMCPMiddleware({
     apiKey: "test-key",
     baseUrl: BASE,
+    userIdFn: ({ request }) => {
+      const req = request as { meta?: { authenticatedUserId?: string } };
+      return req.meta?.authenticatedUserId ?? null;
+    },
     authorizationIdFn,
   });
   return mw;
@@ -206,12 +214,49 @@ describe("AllowlyMCPMiddleware — low-level Server", () => {
     mw.attach(server as any);
 
     const handler = server.handlers.get("tools/call")!;
-    const result = await handler(makeCallToolReq("read_email", {})) as any;
+    const result = await handler(makeCallToolReq("read_email", {}, null)) as any;
 
     expect(checkSpy).not.toHaveBeenCalled();
     expect(result.isError).toBe(true);
     const body = JSON.parse(result.content[0].text);
     expect(body.decision).toBe("deny");
+  });
+
+  it("ignores caller-supplied user_id by default", async () => {
+    const mw = new AllowlyMCPMiddleware({
+      apiKey: "test-key",
+      baseUrl: BASE,
+      authorizationIdFn: (userId) => userId ? "auth_1" : null,
+    });
+    const checkSpy = vi.spyOn(mw.client, "check");
+
+    const server = makeServer();
+    mw.attach(server as any);
+
+    const handler = server.handlers.get("tools/call")!;
+    const result = await handler(makeCallToolReq("read_email", { user_id: "u1" }, null)) as any;
+
+    expect(checkSpy).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).decision).toBe("deny");
+  });
+
+  it("can opt into legacy user_id tool arguments", async () => {
+    const mw = new AllowlyMCPMiddleware({
+      apiKey: "test-key",
+      baseUrl: BASE,
+      allowUserIdArgument: true,
+      authorizationIdFn: (userId) => userId ? "auth_1" : null,
+    });
+    const checkSpy = vi.spyOn(mw.client, "check").mockResolvedValue(makeAllowResponse());
+
+    const server = makeServer();
+    mw.attach(server as any);
+
+    const handler = server.handlers.get("tools/call")!;
+    await handler(makeCallToolReq("read_email", { user_id: "u1" }, null));
+
+    expect(checkSpy).toHaveBeenCalledWith({ authorizationId: "auth_1", scopes: ["read_email"] });
   });
 
   it("calls check with resolved authorization_id", async () => {

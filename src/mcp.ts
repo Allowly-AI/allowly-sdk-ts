@@ -5,6 +5,7 @@
  *   const mcp = new McpServer({ name: "my-agent", version: "1.0" });
  *   const allowly = new AllowlyMCPMiddleware({
  *     apiKey: process.env.ALLOWLY_KEY!,
+ *     userIdFn: ({ request }) => request.auth.userId,
  *     authorizationIdFn: (userId) => db.getAuthorizationId(userId),
  *   });
  *   allowly.attach(mcp.server);
@@ -18,16 +19,27 @@ import { Allowly } from "./client.js";
 import type { ScopeCheckResultConfirm, ScopeCheckResultEscalate } from "./types.js";
 
 type AuthorizationIdFn = (userId: string) => string | null | Promise<string | null>;
+type UserIdFn = (context: MCPAuthorizationContext) => string | null | Promise<string | null>;
+
+export interface MCPAuthorizationContext {
+  toolName: string;
+  arguments: Record<string, unknown>;
+  request?: unknown;
+}
 
 export interface AllowlyMCPMiddlewareOptions {
   apiKey: string;
   authorizationIdFn: AuthorizationIdFn;
+  userIdFn?: UserIdFn;
   baseUrl?: string;
+  allowUserIdArgument?: boolean;
 }
 
 export class AllowlyMCPMiddleware {
   readonly client: Allowly;
   private readonly authorizationIdFn: AuthorizationIdFn;
+  private readonly userIdFn?: UserIdFn;
+  private readonly allowUserIdArgument: boolean;
 
   constructor(opts: AllowlyMCPMiddlewareOptions) {
     this.client = new Allowly({
@@ -35,10 +47,25 @@ export class AllowlyMCPMiddleware {
       ...(opts.baseUrl ? { baseUrl: opts.baseUrl } : {}),
     });
     this.authorizationIdFn = opts.authorizationIdFn;
+    this.userIdFn = opts.userIdFn;
+    this.allowUserIdArgument = opts.allowUserIdArgument ?? false;
   }
 
-  private async resolveAuthorizationId(userId: string): Promise<string | null> {
+  private async resolveAuthorizationId(context: MCPAuthorizationContext): Promise<string | null> {
+    const userId = await this.resolveUserId(context);
+    if (!userId) return null;
     return this.authorizationIdFn(userId);
+  }
+
+  private async resolveUserId(context: MCPAuthorizationContext): Promise<string | null> {
+    if (this.userIdFn) {
+      return this.userIdFn(context);
+    }
+    if (this.allowUserIdArgument) {
+      const userId = context.arguments["user_id"];
+      return typeof userId === "string" && userId ? userId : null;
+    }
+    return null;
   }
 
   /**
@@ -63,9 +90,9 @@ export class AllowlyMCPMiddleware {
     server.setRequestHandler(CallToolRequestSchema, async (req: unknown) => {
       const r = req as { params: { name: string; arguments?: Record<string, unknown> } };
       const args = r.params.arguments ?? {};
-      const userId = (args["user_id"] as string) ?? "";
+      const context = { toolName: r.params.name, arguments: args, request: req };
 
-      const authorizationId = await this.resolveAuthorizationId(userId);
+      const authorizationId = await this.resolveAuthorizationId(context);
       if (authorizationId === null) {
         return {
           content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "authorization_not_found" }) }],

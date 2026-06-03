@@ -1,5 +1,6 @@
 export { Allowly } from "./client.js";
 export { AllowlyAPIError } from "./error.js";
+export { AllowlyMCPMiddleware } from "./mcp.js";
 export * as identifiers from "./identifiers.js";
 export {
   verifyReceipt,
@@ -36,3 +37,4 @@ export type {
 } from "./types.js";
 export type { PublicKey, KeyDocument } from "./verify.js";
 export type { FetchKeysDocOptions } from "./types.js";
+export type { AllowlyMCPMiddlewareOptions, MCPAuthorizationContext } from "./mcp.js";
