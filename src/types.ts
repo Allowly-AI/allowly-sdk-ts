@@ -29,6 +29,17 @@ export interface EscalationInfo {
   expiresAt?: string | null;
 }
 
+export interface PolicyConditionEvidence {
+  field: string;
+  op: string;
+  value: string | number | boolean | null | Array<string | number | boolean | null>;
+}
+
+export interface PolicyEvalInfo {
+  matchedCondition: PolicyConditionEvidence | null;
+  fieldValue: string | number | boolean | null;
+}
+
 export interface ScopeCheckResultBase {
   decision: Decision;
   reason: string;
@@ -37,6 +48,7 @@ export interface ScopeCheckResultBase {
   fallbackMode: FallbackMode | null;
   budget: BudgetInfo | null;
   escalation: EscalationInfo | null;
+  policyEval: PolicyEvalInfo | null;
 }
 
 export interface ScopeCheckResultAllow extends ScopeCheckResultBase {

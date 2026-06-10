@@ -10,6 +10,8 @@ import type {
   ConfirmationApproveResponse,
   BudgetInfo,
   EscalationInfo,
+  PolicyConditionEvidence,
+  PolicyEvalInfo,
   EscalationResolveRequest,
   EscalationResolveResponse,
   ReceiptEnvelope,
@@ -338,6 +340,7 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
           fallbackMode: (result.fallback_mode as FallbackMode | null | undefined) ?? null,
           budget: parseBudgetInfo(result.budget),
           escalation: parseEscalationInfo(result.escalation),
+          policyEval: parsePolicyEval(result.policy_eval),
           confirmNonce: result.confirm_nonce,
           confirmExpiresAt: result.confirm_expires_at,
           confirmPromptHint: result.confirm_prompt_hint,
@@ -369,6 +372,23 @@ function parseEscalationInfo(raw: unknown): EscalationInfo | null {
     status: escalation.status as string,
     escalationTo: (escalation.escalation_to as string | undefined) ?? null,
     expiresAt: (escalation.expires_at as string | undefined) ?? null,
+  };
+}
+
+function parsePolicyEval(raw: unknown): PolicyEvalInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const policyEval = raw as Record<string, unknown>;
+  const matched = policyEval.matched_condition;
+  return {
+    matchedCondition:
+      matched && typeof matched === "object"
+        ? {
+            field: (matched as Record<string, unknown>).field as string,
+            op: (matched as Record<string, unknown>).op as string,
+            value: (matched as Record<string, unknown>).value as PolicyConditionEvidence["value"],
+          }
+        : null,
+    fieldValue: policyEval.field_value as PolicyEvalInfo["fieldValue"],
   };
 }
 

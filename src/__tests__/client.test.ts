@@ -65,6 +65,7 @@ describe("Allowly.check", () => {
     expect(scope.isFallback).toBe(false);
     expect(scope.fallbackMode).toBeNull();
     expect(scope.budget).toBeNull();
+    expect(scope.policyEval).toBeNull();
     expect(scope.receipt?.status).toBe("pending");
     if (scope.receipt?.status === "pending") {
       expect(scope.receipt.receiptId).toBe("rcp_abc");
@@ -97,6 +98,39 @@ describe("Allowly.check", () => {
     const scope = res.results["email.send"];
     expect(scope.decision).toBe("confirm");
     if (scope.decision === "confirm") expect(scope.confirmNonce).toBe("cnf_abc");
+  });
+
+  it("parses policy_eval evidence on conditional decisions", async () => {
+    const fetch = makeFetch(200, checkBody("hiring.reject_application", {
+      decision: "confirm",
+      reason: "condition_requires_user_confirmation",
+      confirm_nonce: "cnf_policy",
+      confirm_expires_at: "2026-04-20T00:15:00Z",
+      confirm_prompt_hint: "hiring.reject_application",
+      policy_eval: {
+        matched_condition: {
+          field: "rule_fired",
+          op: "in",
+          value: ["employment_gap", "availability"],
+        },
+        field_value: "employment_gap",
+      },
+      receipt: PENDING_RECEIPT,
+    }, { authorization_id: "auth_policy" }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    const res = await client.check({ authorizationId: "auth_policy", scopes: ["hiring.reject_application"] });
+    const scope = res.results["hiring.reject_application"];
+
+    expect(scope.decision).toBe("confirm");
+    expect(scope.policyEval).toEqual({
+      matchedCondition: {
+        field: "rule_fired",
+        op: "in",
+        value: ["employment_gap", "availability"],
+      },
+      fieldValue: "employment_gap",
+    });
   });
 
   it("returns escalate with escalation metadata", async () => {

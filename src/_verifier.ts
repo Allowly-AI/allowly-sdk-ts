@@ -37,8 +37,9 @@ const REQUIRED_FIELDS = new Set([
   "user_id", "agent_id", "resource", "context",
   "authorization_id", "policy_version", "signature",
 ]);
+const OPTIONAL_FIELDS = new Set(["policy_eval"]);
 const DISCRIMINATOR_FIELDS = new Set(["scope", "event"]);
-const ALL_TOP_LEVEL_FIELDS = new Set([...REQUIRED_FIELDS, ...DISCRIMINATOR_FIELDS]);
+const ALL_TOP_LEVEL_FIELDS = new Set([...REQUIRED_FIELDS, ...OPTIONAL_FIELDS, ...DISCRIMINATOR_FIELDS]);
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 export class VerificationError extends Error {
@@ -71,6 +72,14 @@ export interface Receipt {
   context: Record<string, unknown>;
   authorization_id: string | null;
   policy_version: string;
+  policy_eval?: {
+    matched_condition: {
+      field: string;
+      op: string;
+      value: string | number | boolean | null | Array<string | number | boolean | null>;
+    } | null;
+    field_value: string | number | boolean | null;
+  };
   signature: { alg: string; key_id: string; value: string };
 }
 
@@ -215,6 +224,9 @@ export async function verifyReceipt(
         `authorization lifecycle receipt with event=${JSON.stringify(event)} must have null resource`,
       );
     }
+    if ("policy_eval" in receipt) {
+      throw new VerificationError("policy_eval must be absent on event receipts");
+    }
   } else {
     const scope = receipt.scope;
     if (typeof scope !== "string") {
@@ -330,6 +342,74 @@ function checkSchema(receipt: Record<string, unknown>): void {
     throw new VerificationError(
       `signature.value must decode to 64 bytes (Ed25519), got ${sigBytes.length}`,
     );
+  }
+
+  if ("policy_eval" in receipt) {
+    checkPolicyEval(receipt.policy_eval);
+  }
+}
+
+function isPolicyScalar(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isInteger(value))
+  );
+}
+
+function isPolicyConditionValue(value: unknown): boolean {
+  if (isPolicyScalar(value)) {
+    return true;
+  }
+  return Array.isArray(value) && value.every((item) => isPolicyScalar(item));
+}
+
+function checkExactKeys(
+  obj: Record<string, unknown>,
+  expected: string[],
+  prefix: string,
+): void {
+  const expectedSet = new Set(expected);
+  const extra = Object.keys(obj).filter((key) => !expectedSet.has(key));
+  const missing = expected.filter((key) => !(key in obj));
+  if (extra.length) {
+    throw new VerificationError(`${prefix} has unknown fields: ${JSON.stringify(extra.sort())}`);
+  }
+  if (missing.length) {
+    throw new VerificationError(`${prefix} missing fields: ${JSON.stringify(missing.sort())}`);
+  }
+}
+
+function checkPolicyEval(value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new VerificationError("policy_eval must be an object");
+  }
+  const policyEval = value as Record<string, unknown>;
+  checkExactKeys(policyEval, ["matched_condition", "field_value"], "policy_eval");
+
+  const matched = policyEval.matched_condition;
+  if (matched !== null) {
+    if (typeof matched !== "object" || Array.isArray(matched)) {
+      throw new VerificationError("policy_eval.matched_condition must be an object or null");
+    }
+    const condition = matched as Record<string, unknown>;
+    checkExactKeys(condition, ["field", "op", "value"], "policy_eval.matched_condition");
+    if (typeof condition.field !== "string") {
+      throw new VerificationError("policy_eval.matched_condition.field must be a string");
+    }
+    if (typeof condition.op !== "string") {
+      throw new VerificationError("policy_eval.matched_condition.op must be a string");
+    }
+    if (!isPolicyConditionValue(condition.value)) {
+      throw new VerificationError(
+        "policy_eval.matched_condition.value must be string, integer, boolean, null, or an array of those",
+      );
+    }
+  }
+
+  if (!isPolicyScalar(policyEval.field_value)) {
+    throw new VerificationError("policy_eval.field_value must be string, integer, boolean, or null");
   }
 }
 

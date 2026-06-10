@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { generateKeyPairSync, sign } from "node:crypto";
 import {
+  canonicalize,
   clearKeysDocCache,
   fetchKeysDoc,
   loadKeysFromJson,
   VerificationError,
+  verifyReceipt,
 } from "../verify.js";
 
 const VALID_DOC = {
@@ -18,6 +21,65 @@ const VALID_DOC = {
     },
   ],
 };
+
+function b64url(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
+}
+
+function signedPolicyEvalReceipt() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" });
+  const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
+  const payload = {
+    version: "1.0",
+    receipt_id: "rcp_policy_eval",
+    workspace_id: "ws_1",
+    issued_at: "2026-06-09T17:04:39.114Z",
+    decision: "confirm",
+    reason: "condition_requires_user_confirmation",
+    user_id: "cand_55ab2",
+    agent_id: "scout_referrals",
+    scope: "hiring.reject_application",
+    resource: "application:req_2207:cand_55ab2",
+    context: {
+      initiated_by: "agent",
+      rule_fired: "employment_gap",
+    },
+    authorization_id: "auth_conditional",
+    policy_version: "2026-06-01.2",
+    policy_eval: {
+      matched_condition: {
+        field: "rule_fired",
+        op: "in",
+        value: ["employment_gap", "availability"],
+      },
+      field_value: "employment_gap",
+    },
+  };
+  const signature = sign(null, canonicalize(payload), privateKey);
+  return {
+    keysDoc: {
+      workspace_id: "ws_1",
+      keys: [
+        {
+          key_id: "test-key/v1",
+          alg: "Ed25519",
+          public_key: b64url(publicKeyRaw),
+          active_from: "2026-01-01T00:00:00Z",
+          active_until: null,
+        },
+      ],
+    },
+    receipt: {
+      ...payload,
+      signature: {
+        alg: "Ed25519",
+        key_id: "test-key/v1",
+        value: b64url(signature),
+      },
+    },
+  };
+}
 
 describe("fetchKeysDoc", () => {
   beforeEach(() => {
@@ -106,5 +168,34 @@ describe("loadKeysFromJson", () => {
         keys: [{ ...VALID_DOC.keys[0], public_key: "not-base64url??" }],
       }),
     ).toThrow(VerificationError);
+  });
+});
+
+describe("verifyReceipt", () => {
+  it("accepts draft.5 policy_eval with an in-condition array value", async () => {
+    const { keysDoc, receipt } = signedPolicyEvalReceipt();
+    const keys = loadKeysFromJson(keysDoc);
+
+    await expect(
+      verifyReceipt(receipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects policy_eval on event receipts", async () => {
+    const { keysDoc, receipt } = signedPolicyEvalReceipt();
+    const keys = loadKeysFromJson(keysDoc);
+    const eventReceipt = {
+      ...receipt,
+      scope: undefined,
+      event: "authorization.create",
+      decision: "authorization_granted",
+      reason: "user_approved_via_customer_ui",
+      resource: null,
+    };
+    delete eventReceipt.scope;
+
+    await expect(
+      verifyReceipt(eventReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+    ).rejects.toThrow("policy_eval must be absent on event receipts");
   });
 });
