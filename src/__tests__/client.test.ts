@@ -404,6 +404,27 @@ describe("Allowly.authorizations.create", () => {
     expect(res.escalationTargets).toEqual({ "candidate.delete": "compliance" });
   });
 
+  it("sends supersession lineage on create", async () => {
+    const fetch = makeFetch(201, {
+      authorization_id: "auth_new",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await client.authorizations.create({
+      userId: "u1",
+      agentId: "a1",
+      scopes: ["email.read"],
+      replaces: "auth_prev",
+    });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.replaces).toBe("auth_prev");
+  });
+
   it("does not send session_id", async () => {
     const fetch = makeFetch(201, {
       authorization_id: "auth_new", created_at: "2026-04-20T00:00:00Z",
@@ -448,6 +469,19 @@ describe("Allowly.authorizations.revoke", () => {
     expect(res.authorizationId).toBe("auth_123");
     expect(res.revokedAt).toBe("2026-05-01T09:00:00Z");
     expect(res.receipt.status).toBe("pending");
+  });
+
+  it("sends supersededBy on revoke", async () => {
+    const fetch = makeFetch(200, {
+      authorization_id: "auth_123", revoked_at: "2026-05-01T09:00:00Z", receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await client.authorizations.revoke("auth_123", { supersededBy: "auth_456" });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.superseded_by).toBe("auth_456");
   });
 });
 

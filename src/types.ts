@@ -103,6 +103,7 @@ export interface AuthorizationCreateRequest {
   escalationTargets?: Record<string, string>;
   budgetLimitMicros?: number;
   expiresAt?: Date | string;
+  replaces?: string;
   metadata?: Record<string, unknown>;
 }
 

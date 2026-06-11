@@ -190,6 +190,7 @@ class AuthorizationsResource {
       escalation_targets: req.escalationTargets ?? {},
       budget_limit_micros: req.budgetLimitMicros,
       expires_at: expiresAt,
+      replaces: req.replaces,
       metadata: req.metadata ?? {},
     });
     return {
@@ -208,10 +209,11 @@ class AuthorizationsResource {
 
   async revoke(
     authorizationId: string,
-    opts: { revokedBy?: string; notes?: string } = {}
+    opts: { revokedBy?: string; supersededBy?: string; notes?: string } = {}
   ): Promise<AuthorizationRevokeResponse> {
     const body: Record<string, string> = {};
     if (opts.revokedBy) body.revoked_by = opts.revokedBy;
+    if (opts.supersededBy) body.superseded_by = opts.supersededBy;
     if (opts.notes) body.notes = opts.notes;
     const raw = await this.client.request<Record<string, unknown>>(
       "DELETE",

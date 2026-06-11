@@ -172,7 +172,7 @@ describe("loadKeysFromJson", () => {
 });
 
 describe("verifyReceipt", () => {
-  it("accepts draft.5 policy_eval with an in-condition array value", async () => {
+  it("accepts draft.6 policy_eval with an in-condition array value", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
 
@@ -197,5 +197,41 @@ describe("verifyReceipt", () => {
     await expect(
       verifyReceipt(eventReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
     ).rejects.toThrow("policy_eval must be absent on event receipts");
+  });
+
+  it("rejects integers outside the safe range", async () => {
+    const { keysDoc, receipt } = signedPolicyEvalReceipt();
+    const keys = loadKeysFromJson(keysDoc);
+    const badReceipt = {
+      ...receipt,
+      policy_eval: {
+        matched_condition: {
+          field: "score_delta",
+          op: "eq",
+          value: Number.MAX_SAFE_INTEGER + 1,
+        },
+        field_value: 1,
+      },
+    };
+
+    await expect(
+      verifyReceipt(badReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+    ).rejects.toThrow("integer exceeds the safe range");
+  });
+
+  it("rejects timestamps without an explicit timezone", async () => {
+    const { keysDoc, receipt } = signedPolicyEvalReceipt();
+    const keys = loadKeysFromJson(keysDoc);
+    const badKeys = {
+      ...keysDoc,
+      keys: [{ ...keysDoc.keys[0], active_from: "2026-01-01T00:00:00" }],
+    };
+
+    expect(() => loadKeysFromJson(badKeys)).toThrow("not an RFC 3339 timestamp with timezone");
+
+    const badReceipt = { ...receipt, issued_at: "2026-06-09T17:04:39.114" };
+    await expect(
+      verifyReceipt(badReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+    ).rejects.toThrow("not an RFC 3339 timestamp with timezone");
   });
 });

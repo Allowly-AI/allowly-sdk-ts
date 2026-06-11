@@ -41,6 +41,8 @@ const OPTIONAL_FIELDS = new Set(["policy_eval"]);
 const DISCRIMINATOR_FIELDS = new Set(["scope", "event"]);
 const ALL_TOP_LEVEL_FIELDS = new Set([...REQUIRED_FIELDS, ...OPTIONAL_FIELDS, ...DISCRIMINATOR_FIELDS]);
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+const B64URL_RE = /^[A-Za-z0-9_-]*$/;
+const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 export class VerificationError extends Error {
   constructor(message: string) {
@@ -88,6 +90,9 @@ export interface Receipt {
 // ---------------------------------------------------------------------------
 
 function b64urlDecode(s: string): Uint8Array {
+  if (!B64URL_RE.test(s)) {
+    throw new VerificationError(`not unpadded base64url: ${JSON.stringify(s)}`);
+  }
   const padded = s + "=".repeat((4 - (s.length % 4)) % 4);
   const standard = padded.replace(/-/g, "+").replace(/_/g, "/");
   const binary = Buffer.from(standard, "base64");
@@ -108,6 +113,11 @@ function assertNoFloats(obj: unknown): void {
   if (typeof obj === "number") {
     if (!Number.isInteger(obj)) {
       throw new VerificationError("v1 receipts must not contain non-integer numbers");
+    }
+    if (!Number.isSafeInteger(obj)) {
+      throw new VerificationError(
+        "integer exceeds the safe range ±(2^53-1); v1 receipts must not carry integers that lose precision in IEEE-754 doubles",
+      );
     }
     return;
   }
@@ -414,6 +424,9 @@ function checkPolicyEval(value: unknown): void {
 }
 
 function parseRFC3339(s: string): Date {
+  if (typeof s !== "string" || !RFC3339_RE.test(s)) {
+    throw new VerificationError(`not an RFC 3339 timestamp with timezone: ${JSON.stringify(s)}`);
+  }
   const d = new Date(s);
   if (isNaN(d.getTime())) {
     throw new VerificationError(`invalid RFC 3339 timestamp: ${s}`);
