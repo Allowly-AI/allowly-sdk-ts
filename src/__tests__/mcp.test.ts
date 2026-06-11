@@ -24,6 +24,7 @@ function makeAllowResponse() {
         fallbackMode: null,
         budget: null,
         escalation: null,
+        policyEval: null,
       },
       send_email: {
         decision: "allow" as const,
@@ -33,6 +34,7 @@ function makeAllowResponse() {
         fallbackMode: null,
         budget: null,
         escalation: null,
+        policyEval: null,
       },
     },
   };
@@ -51,6 +53,7 @@ function makeDenyResponse() {
         fallbackMode: null,
         budget: null,
         escalation: null,
+        policyEval: null,
       },
     },
   };
@@ -69,6 +72,7 @@ function makeConfirmResponse() {
         fallbackMode: null,
         budget: null,
         escalation: null,
+        policyEval: null,
         confirmNonce: "cnf_abc", confirmExpiresAt: "2026-04-20T00:15:00Z",
         confirmPromptHint: "email.send",
       },
@@ -97,6 +101,7 @@ function makeEscalateResponse() {
         escalationId: "esc_abc",
         escalationTo: "compliance",
         escalationExpiresAt: "2026-04-21T17:00:00Z",
+        policyEval: null,
       },
     },
   };

@@ -96,7 +96,7 @@ export interface ScopeEntry {
 export interface AuthorizationCreateRequest {
   userId: string;
   agentId?: string;
-  bundleId?: string;
+  policyId?: string;
   scopes?: ScopeEntry[] | string[];
   requiresConfirmFor?: string[];
   requiresEscalationFor?: string[];
@@ -109,7 +109,7 @@ export interface AuthorizationCreateRequest {
 
 export interface AuthorizationCreateResponse {
   authorizationId: string;
-  bundleId?: string;
+  policyId?: string;
   createdAt: string;
   expiresAt: string;
   receipt: ReceiptEnvelopePending;

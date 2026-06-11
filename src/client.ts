@@ -183,7 +183,7 @@ class AuthorizationsResource {
     const raw = await this.client.request<Record<string, unknown>>("POST", "/v1/authorizations", {
       user_id: req.userId,
       agent_id: req.agentId,
-      bundle_id: req.bundleId,
+      policy_id: req.policyId,
       scopes,
       requires_confirm_for: req.requiresConfirmFor ?? [],
       requires_escalation_for: req.requiresEscalationFor ?? [],
@@ -195,7 +195,7 @@ class AuthorizationsResource {
     });
     return {
       authorizationId: raw.authorization_id as string,
-      bundleId: raw.bundle_id as string | undefined,
+      policyId: raw.policy_id as string | undefined,
       createdAt: raw.created_at as string,
       expiresAt: raw.expires_at as string,
       receipt: parsePendingEnvelope(raw.receipt as Record<string, unknown>),
