@@ -39,7 +39,7 @@ function signedPolicyEvalReceipt() {
     reason: "condition_requires_user_confirmation",
     user_id: "cand_55ab2",
     agent_id: "scout_referrals",
-    scope: "hiring.reject_application",
+    action: "hiring.reject_application",
     resource: "application:req_2207:cand_55ab2",
     context: {
       initiated_by: "agent",
@@ -186,13 +186,13 @@ describe("verifyReceipt", () => {
     const keys = loadKeysFromJson(keysDoc);
     const eventReceipt = {
       ...receipt,
-      scope: undefined,
+      action: undefined,
       event: "authorization.create",
       decision: "authorization_granted",
       reason: "user_approved_via_customer_ui",
       resource: null,
     };
-    delete eventReceipt.scope;
+    delete eventReceipt.action;
 
     await expect(
       verifyReceipt(eventReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),

@@ -18,7 +18,7 @@ function makeAllowResponse() {
     results: {
       read_email: {
         decision: "allow" as const,
-        reason: "authorization_granted_scope_active",
+        reason: "authorization_granted_action_active",
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
         isFallback: false,
         fallbackMode: null,
@@ -28,7 +28,7 @@ function makeAllowResponse() {
       },
       send_email: {
         decision: "allow" as const,
-        reason: "authorization_granted_scope_active",
+        reason: "authorization_granted_action_active",
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
         isFallback: false,
         fallbackMode: null,
@@ -66,7 +66,7 @@ function makeConfirmResponse() {
     results: {
       send_email: {
         decision: "confirm" as const,
-        reason: "scope_requires_user_confirmation",
+        reason: "action_requires_user_confirmation",
         receipt: { status: "pending" as const, receiptId: "rcp_abc", readyAtEstimate: "", url: "" },
         isFallback: false,
         fallbackMode: null,
@@ -261,7 +261,7 @@ describe("AllowlyMCPMiddleware — low-level Server", () => {
     const handler = server.handlers.get("tools/call")!;
     await handler(makeCallToolReq("read_email", { user_id: "u1" }, null));
 
-    expect(checkSpy).toHaveBeenCalledWith({ authorizationId: "auth_1", scopes: ["read_email"] });
+    expect(checkSpy).toHaveBeenCalledWith({ authorizationId: "auth_1", actions: ["read_email"] });
   });
 
   it("calls check with resolved authorization_id", async () => {
@@ -274,6 +274,6 @@ describe("AllowlyMCPMiddleware — low-level Server", () => {
     const handler = server.handlers.get("tools/call")!;
     await handler(makeCallToolReq("read_email", { user_id: "u1" }));
 
-    expect(checkSpy).toHaveBeenCalledWith({ authorizationId: "auth_1", scopes: ["read_email"] });
+    expect(checkSpy).toHaveBeenCalledWith({ authorizationId: "auth_1", actions: ["read_email"] });
   });
 });

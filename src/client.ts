@@ -28,7 +28,7 @@ export class Allowly {
   private readonly _fetch: typeof globalThis.fetch;
   private readonly checkTimeoutMs: number;
   private readonly defaultFallback: FallbackMode;
-  private readonly fallbackByScope: Record<string, FallbackMode>;
+  private readonly fallbackByAction: Record<string, FallbackMode>;
 
   readonly authorizations: AuthorizationsResource;
   readonly confirmations: ConfirmationsResource;
@@ -47,9 +47,9 @@ export class Allowly {
       throw new Error("checkTimeoutMs must be positive");
     }
     this.defaultFallback = validateFallbackMode(options.defaultFallback ?? "fail_closed");
-    this.fallbackByScope = Object.fromEntries(
-      Object.entries(options.fallbackByScope ?? {}).map(([scope, mode]) => [
-        scope,
+    this.fallbackByAction = Object.fromEntries(
+      Object.entries(options.fallbackByAction ?? {}).map(([action, mode]) => [
+        action,
         validateFallbackMode(mode),
       ])
     );
@@ -91,7 +91,7 @@ export class Allowly {
 
   async check(req: {
     authorizationId: string;
-    scopes: string[];
+    actions: string[];
     resource?: string;
     sessionId?: string;
     estimatedCostMicros?: number;
@@ -103,7 +103,7 @@ export class Allowly {
     const timeout = setTimeout(() => controller.abort(), this.checkTimeoutMs);
     const body = {
       authorization_id: req.authorizationId,
-      scopes: req.scopes,
+      actions: req.actions,
       resource: req.resource,
       session_id: req.sessionId,
       estimated_cost_micros: req.estimatedCostMicros,
@@ -116,16 +116,16 @@ export class Allowly {
       return parseCheckResponse(raw);
     } catch (err) {
       if (isAbortError(err)) {
-        return this.fallbackCheckResponse(req.authorizationId, req.scopes, "timeout");
+        return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
       }
       if (err instanceof AllowlyAPIError) {
         if (err.status >= 500) {
-          return this.fallbackCheckResponse(req.authorizationId, req.scopes, "unreachable");
+          return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable");
         }
         throw err;
       }
       if (err instanceof TypeError) {
-        return this.fallbackCheckResponse(req.authorizationId, req.scopes, "unreachable");
+        return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable");
       }
       throw err;
     } finally {
@@ -133,13 +133,13 @@ export class Allowly {
     }
   }
 
-  private fallbackModeForScope(scope: string): FallbackMode {
-    return this.fallbackByScope[scope] ?? this.defaultFallback;
+  private fallbackModeForAction(action: string): FallbackMode {
+    return this.fallbackByAction[action] ?? this.defaultFallback;
   }
 
   private fallbackCheckResponse(
     authorizationId: string,
-    scopes: string[],
+    actions: string[],
     failure: "timeout" | "unreachable"
   ): CheckResponse {
     return {
@@ -149,11 +149,11 @@ export class Allowly {
       authorizationExpiresAt: null,
       policyVersion: "sdk_fallback",
       results: Object.fromEntries(
-        scopes.map((scope) => {
-          const fallbackMode = this.fallbackModeForScope(scope);
+        actions.map((action) => {
+          const fallbackMode = this.fallbackModeForAction(action);
           const opened = fallbackMode === "fail_open";
           return [
-            scope,
+            action,
             {
               decision: opened ? "allow" : "deny",
               reason: `fallback_${opened ? "open" : "closed"}_${failure}`,
@@ -175,7 +175,7 @@ class AuthorizationsResource {
 
   async create(req: AuthorizationCreateRequest): Promise<AuthorizationCreateResponse> {
     const expiresAt = req.expiresAt instanceof Date ? req.expiresAt.toISOString() : req.expiresAt;
-    const scopes = req.scopes?.map((s) =>
+    const actions = req.actions?.map((s) =>
       typeof s === "string"
         ? { name: s, constraints: {} }
         : { name: s.name, constraints: s.constraints ?? {} }
@@ -184,7 +184,7 @@ class AuthorizationsResource {
       user_id: req.userId,
       agent_id: req.agentId,
       policy_id: req.policyId,
-      scopes,
+      actions,
       requires_confirm_for: req.requiresConfirmFor ?? [],
       requires_escalation_for: req.requiresEscalationFor ?? [],
       escalation_targets: req.escalationTargets ?? {},
@@ -323,7 +323,7 @@ function parseReceiptEnvelope(raw: Record<string, unknown>): ReceiptEnvelope {
 }
 
 function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
-  // The API returns a map keyed by requested scope. Preserve those keys so
+  // The API returns a map keyed by requested action. Preserve those keys so
   // callers can safely handle mixed allow/deny/confirm/escalate results in one check.
   return {
     userId: raw.user_id as string,
@@ -332,8 +332,8 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
     authorizationExpiresAt: raw.authorization_expires_at as string,
     policyVersion: raw.policy_version as string,
     results: Object.fromEntries(
-      Object.entries(raw.results as Record<string, Record<string, unknown>>).map(([scope, result]) => [
-        scope,
+      Object.entries(raw.results as Record<string, Record<string, unknown>>).map(([action, result]) => [
+        action,
         {
           decision: result.decision,
           reason: result.reason,

@@ -19,7 +19,7 @@ function makeFetch(status: number, body: unknown) {
   });
 }
 
-function checkBody(scope: string, result: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+function checkBody(action: string, result: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   return {
     authorization_id: "auth_1",
     user_id: "u1",
@@ -27,7 +27,7 @@ function checkBody(scope: string, result: Record<string, unknown>, extra: Record
     authorization_expires_at: "2026-12-31T00:00:00Z",
     policy_version: "2026-04-19.1",
     ...extra,
-    results: { [scope]: result },
+    results: { [action]: result },
   };
 }
 
@@ -54,23 +54,23 @@ describe("Allowly.check", () => {
   it("returns allow with pending receipt envelope", async () => {
     const fetch = makeFetch(200, checkBody("email.read", {
       decision: "allow",
-      reason: "authorization_granted_scope_active",
+      reason: "authorization_granted_action_active",
       receipt: PENDING_RECEIPT,
     }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.check({ authorizationId: "auth_1", scopes: ["email.read"] });
-    const scope = res.results["email.read"];
+    const res = await client.check({ authorizationId: "auth_1", actions: ["email.read"] });
+    const action = res.results["email.read"];
 
-    expect(scope.decision).toBe("allow");
-    expect(scope.isFallback).toBe(false);
-    expect(scope.fallbackMode).toBeNull();
-    expect(scope.budget).toBeNull();
-    expect(scope.policyEval).toBeNull();
-    expect(scope.receipt?.status).toBe("pending");
-    if (scope.receipt?.status === "pending") {
-      expect(scope.receipt.receiptId).toBe("rcp_abc");
+    expect(action.decision).toBe("allow");
+    expect(action.isFallback).toBe(false);
+    expect(action.fallbackMode).toBeNull();
+    expect(action.budget).toBeNull();
+    expect(action.policyEval).toBeNull();
+    expect(action.receipt?.status).toBe("pending");
+    if (action.receipt?.status === "pending") {
+      expect(action.receipt.receiptId).toBe("rcp_abc");
     }
-    if (scope.decision === "allow") {
+    if (action.decision === "allow") {
       expect(res.userId).toBe("u1");
       expect(res.authorizationId).toBe("auth_1");
     }
@@ -81,23 +81,23 @@ describe("Allowly.check", () => {
       decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT,
     }, { authorization_id: "auth_nope", user_id: null, agent_id: null, authorization_expires_at: null }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.check({ authorizationId: "auth_nope", scopes: ["email.send"] });
+    const res = await client.check({ authorizationId: "auth_nope", actions: ["email.send"] });
     expect(res.results["email.send"].decision).toBe("deny");
     expect(res.results["email.send"].reason).toBe("authorization_not_found");
   });
 
   it("returns confirm with nonce", async () => {
     const fetch = makeFetch(200, checkBody("email.send", {
-      decision: "confirm", reason: "scope_requires_user_confirmation",
+      decision: "confirm", reason: "action_requires_user_confirmation",
       confirm_nonce: "cnf_abc", confirm_expires_at: "2026-04-20T00:15:00Z",
       confirm_prompt_hint: "email.send",
       receipt: PENDING_RECEIPT,
     }, { authorization_id: "auth_2" }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.check({ authorizationId: "auth_2", scopes: ["email.send"] });
-    const scope = res.results["email.send"];
-    expect(scope.decision).toBe("confirm");
-    if (scope.decision === "confirm") expect(scope.confirmNonce).toBe("cnf_abc");
+    const res = await client.check({ authorizationId: "auth_2", actions: ["email.send"] });
+    const action = res.results["email.send"];
+    expect(action.decision).toBe("confirm");
+    if (action.decision === "confirm") expect(action.confirmNonce).toBe("cnf_abc");
   });
 
   it("parses policy_eval evidence on conditional decisions", async () => {
@@ -119,11 +119,11 @@ describe("Allowly.check", () => {
     }, { authorization_id: "auth_policy" }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
-    const res = await client.check({ authorizationId: "auth_policy", scopes: ["hiring.reject_application"] });
-    const scope = res.results["hiring.reject_application"];
+    const res = await client.check({ authorizationId: "auth_policy", actions: ["hiring.reject_application"] });
+    const action = res.results["hiring.reject_application"];
 
-    expect(scope.decision).toBe("confirm");
-    expect(scope.policyEval).toEqual({
+    expect(action.decision).toBe("confirm");
+    expect(action.policyEval).toEqual({
       matchedCondition: {
         field: "rule_fired",
         op: "in",
@@ -149,27 +149,27 @@ describe("Allowly.check", () => {
       receipt: PENDING_RECEIPT,
     }, { authorization_id: "auth_esc" }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.check({ authorizationId: "auth_esc", scopes: ["candidate.delete"] });
-    const scope = res.results["candidate.delete"];
-    expect(scope.decision).toBe("escalate");
-    if (scope.decision === "escalate") {
-      expect(scope.escalationId).toBe("esc_abc");
-      expect(scope.escalationTo).toBe("compliance");
-      expect(scope.escalation?.status).toBe("pending");
+    const res = await client.check({ authorizationId: "auth_esc", actions: ["candidate.delete"] });
+    const action = res.results["candidate.delete"];
+    expect(action.decision).toBe("escalate");
+    if (action.decision === "escalate") {
+      expect(action.escalationId).toBe("esc_abc");
+      expect(action.escalationTo).toBe("compliance");
+      expect(action.escalation?.status).toBe("pending");
     }
   });
 
   it("throws AllowlyAPIError on 401", async () => {
     const fetch = makeFetch(401, { error: { code: "unauthorized", message: "Invalid or revoked API key" } });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    await expect(client.check({ authorizationId: "auth_1", scopes: ["x"] })).rejects.toThrow(AllowlyAPIError);
-    await expect(client.check({ authorizationId: "auth_1", scopes: ["x"] })).rejects.toMatchObject({ status: 401, code: "unauthorized" });
+    await expect(client.check({ authorizationId: "auth_1", actions: ["x"] })).rejects.toThrow(AllowlyAPIError);
+    await expect(client.check({ authorizationId: "auth_1", actions: ["x"] })).rejects.toMatchObject({ status: 401, code: "unauthorized" });
   });
 
   it("sends correct Authorization header", async () => {
     const fetch = makeFetch(200, checkBody("x", { decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    await client.check({ authorizationId: "auth_1", scopes: ["x"] });
+    await client.check({ authorizationId: "auth_1", actions: ["x"] });
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer test-key" });
   });
@@ -177,18 +177,18 @@ describe("Allowly.check", () => {
   it("does not send session_id", async () => {
     const fetch = makeFetch(200, checkBody("x", { decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    await client.check({ authorizationId: "auth_1", scopes: ["x"], estimatedCostMicros: 12345 });
+    await client.check({ authorizationId: "auth_1", actions: ["x"], estimatedCostMicros: 12345 });
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).not.toHaveProperty("session_id");
     expect(body.estimated_cost_micros).toBe(12345);
-    expect(body.scopes).toEqual(["x"]);
+    expect(body.actions).toEqual(["x"]);
   });
 
   it("parses budget results", async () => {
     const fetch = makeFetch(200, checkBody("llm.enrich", {
       decision: "allow",
-      reason: "authorization_granted_scope_active",
+      reason: "authorization_granted_action_active",
       receipt: PENDING_RECEIPT,
       budget: {
         limit_micros: 1_000_000,
@@ -200,7 +200,7 @@ describe("Allowly.check", () => {
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.check({
       authorizationId: "auth_1",
-      scopes: ["llm.enrich"],
+      actions: ["llm.enrich"],
       estimatedCostMicros: 25_000,
     });
     expect(res.results["llm.enrich"].budget).toEqual({
@@ -218,35 +218,35 @@ describe("Allowly.check", () => {
       ...CLIENT_OPTS,
       fetch,
       checkTimeoutMs: 1,
-      fallbackByScope: { "public.web.search": "fail_open" },
+      fallbackByAction: { "public.web.search": "fail_open" },
     });
 
-    const res = await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
-    const scope = res.results["public.web.search"];
+    const res = await client.check({ authorizationId: "auth_1", actions: ["public.web.search"] });
+    const action = res.results["public.web.search"];
 
-    expect(scope.decision).toBe("allow");
-    expect(scope.reason).toBe("fallback_open_timeout");
-    expect(scope.isFallback).toBe(true);
-    expect(scope.fallbackMode).toBe("fail_open");
-    expect(scope.receipt).toBeNull();
-    expect(scope.budget).toBeNull();
+    expect(action.decision).toBe("allow");
+    expect(action.reason).toBe("fallback_open_timeout");
+    expect(action.isFallback).toBe(true);
+    expect(action.fallbackMode).toBe("fail_open");
+    expect(action.receipt).toBeNull();
+    expect(action.budget).toBeNull();
     expect(res.authorizationId).toBe("auth_1");
     expect(res.policyVersion).toBe("sdk_fallback");
   });
 
-  it("uses default fail_closed fallback for unmapped timeout scope", async () => {
+  it("uses default fail_closed fallback for unmapped timeout action", async () => {
     const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
     const fetch = vi.fn().mockRejectedValue(abortError);
     const client = new Allowly({ ...CLIENT_OPTS, fetch, checkTimeoutMs: 1 });
 
-    const res = await client.check({ authorizationId: "auth_1", scopes: ["email.send"] });
-    const scope = res.results["email.send"];
+    const res = await client.check({ authorizationId: "auth_1", actions: ["email.send"] });
+    const action = res.results["email.send"];
 
-    expect(scope.decision).toBe("deny");
-    expect(scope.reason).toBe("fallback_closed_timeout");
-    expect(scope.isFallback).toBe(true);
-    expect(scope.fallbackMode).toBe("fail_closed");
-    expect(scope.receipt).toBeNull();
+    expect(action.decision).toBe("deny");
+    expect(action.reason).toBe("fallback_closed_timeout");
+    expect(action.isFallback).toBe(true);
+    expect(action.fallbackMode).toBe("fail_closed");
+    expect(action.receipt).toBeNull();
   });
 
   it("returns fail_open fallback on connection error", async () => {
@@ -254,31 +254,31 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch,
-      fallbackByScope: { "public.web.search": "fail_open" },
+      fallbackByAction: { "public.web.search": "fail_open" },
     });
 
-    const res = await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
-    const scope = res.results["public.web.search"];
+    const res = await client.check({ authorizationId: "auth_1", actions: ["public.web.search"] });
+    const action = res.results["public.web.search"];
 
-    expect(scope.decision).toBe("allow");
-    expect(scope.reason).toBe("fallback_open_unreachable");
-    expect(scope.isFallback).toBe(true);
-    expect(scope.fallbackMode).toBe("fail_open");
-    expect(scope.receipt).toBeNull();
+    expect(action.decision).toBe("allow");
+    expect(action.reason).toBe("fallback_open_unreachable");
+    expect(action.isFallback).toBe(true);
+    expect(action.fallbackMode).toBe("fail_open");
+    expect(action.receipt).toBeNull();
   });
 
   it("returns fail_closed fallback on 5xx", async () => {
     const fetch = makeFetch(503, { error: { code: "unavailable", message: "try again" } });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
-    const res = await client.check({ authorizationId: "auth_1", scopes: ["email.send"] });
-    const scope = res.results["email.send"];
+    const res = await client.check({ authorizationId: "auth_1", actions: ["email.send"] });
+    const action = res.results["email.send"];
 
-    expect(scope.decision).toBe("deny");
-    expect(scope.reason).toBe("fallback_closed_unreachable");
-    expect(scope.isFallback).toBe(true);
-    expect(scope.fallbackMode).toBe("fail_closed");
-    expect(scope.receipt).toBeNull();
+    expect(action.decision).toBe("deny");
+    expect(action.reason).toBe("fallback_closed_unreachable");
+    expect(action.isFallback).toBe(true);
+    expect(action.fallbackMode).toBe("fail_closed");
+    expect(action.receipt).toBeNull();
   });
 
   it("supports mixed fallback modes in one check", async () => {
@@ -286,7 +286,7 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch,
-      fallbackByScope: {
+      fallbackByAction: {
         "public.web.search": "fail_open",
         "email.send": "fail_closed",
       },
@@ -294,7 +294,7 @@ describe("Allowly.check", () => {
 
     const res = await client.check({
       authorizationId: "auth_1",
-      scopes: ["public.web.search", "email.send"],
+      actions: ["public.web.search", "email.send"],
     });
 
     expect(res.results["public.web.search"].decision).toBe("allow");
@@ -308,10 +308,10 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch,
-      fallbackByScope: { "public.web.search": "fail_open" },
+      fallbackByAction: { "public.web.search": "fail_open" },
     });
 
-    await expect(client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] }))
+    await expect(client.check({ authorizationId: "auth_1", actions: ["public.web.search"] }))
       .rejects.toMatchObject({ status: 429, code: "quota_exceeded" });
   });
 
@@ -320,11 +320,11 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch,
-      fallbackByScope: { "public.web.search": "fail_open" },
+      fallbackByAction: { "public.web.search": "fail_open" },
     });
 
-    await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
-    await client.check({ authorizationId: "auth_1", scopes: ["public.web.search"] });
+    await client.check({ authorizationId: "auth_1", actions: ["public.web.search"] });
+    await client.check({ authorizationId: "auth_1", actions: ["public.web.search"] });
 
     expect(fetch).toHaveBeenCalledTimes(2);
   });
@@ -345,7 +345,7 @@ describe("Allowly.authorizations.create", () => {
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.authorizations.create({
       userId: "u1", agentId: "a1",
-      scopes: [{ name: "email.read" }],
+      actions: [{ name: "email.read" }],
       expiresAt: "2026-12-31T00:00:00Z",
     });
     expect(res.authorizationId).toBe("auth_new");
@@ -366,7 +366,7 @@ describe("Allowly.authorizations.create", () => {
     const res = await client.authorizations.create({
       userId: "u1",
       agentId: "a1",
-      scopes: ["llm.enrich"],
+      actions: ["llm.enrich"],
       budgetLimitMicros: 50_000_000,
     });
 
@@ -391,7 +391,7 @@ describe("Allowly.authorizations.create", () => {
     const res = await client.authorizations.create({
       userId: "u1",
       agentId: "a1",
-      scopes: ["candidate.delete"],
+      actions: ["candidate.delete"],
       requiresEscalationFor: ["candidate.delete"],
       escalationTargets: { "candidate.delete": "compliance" },
     });
@@ -416,7 +416,7 @@ describe("Allowly.authorizations.create", () => {
     await client.authorizations.create({
       userId: "u1",
       agentId: "a1",
-      scopes: ["email.read"],
+      actions: ["email.read"],
       replaces: "auth_prev",
     });
 
@@ -432,7 +432,7 @@ describe("Allowly.authorizations.create", () => {
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     await client.authorizations.create({
-      userId: "u1", agentId: "a1", scopes: ["email.read"], expiresAt: "2026-12-31T00:00:00Z",
+      userId: "u1", agentId: "a1", actions: ["email.read"], expiresAt: "2026-12-31T00:00:00Z",
     });
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse((init as RequestInit).body as string);
@@ -444,13 +444,13 @@ describe("Allowly.authorizations.create", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch,
-      fallbackByScope: { "email.read": "fail_open" },
+      fallbackByAction: { "email.read": "fail_open" },
     });
 
     await expect(client.authorizations.create({
       userId: "u1",
       agentId: "a1",
-      scopes: ["email.read"],
+      actions: ["email.read"],
     })).rejects.toMatchObject({ status: 503, code: "unavailable" });
   });
 });

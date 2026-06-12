@@ -16,7 +16,7 @@
  *   allowly.attach(server);
  */
 import { Allowly } from "./client.js";
-import type { ScopeCheckResultConfirm, ScopeCheckResultEscalate } from "./types.js";
+import type { ActionCheckResultConfirm, ActionCheckResultEscalate } from "./types.js";
 
 type AuthorizationIdFn = (userId: string) => string | null | Promise<string | null>;
 type UserIdFn = (context: MCPAuthorizationContext) => string | null | Promise<string | null>;
@@ -100,16 +100,16 @@ export class AllowlyMCPMiddleware {
         };
       }
 
-      const result = await this.client.check({ authorizationId, scopes: [r.params.name] });
-      const scopeResult = result.results[r.params.name];
+      const result = await this.client.check({ authorizationId, actions: [r.params.name] });
+      const actionResult = result.results[r.params.name];
 
-      if (scopeResult.decision === "allow") {
+      if (actionResult.decision === "allow") {
         if (originalHandler) return originalHandler(req);
         return { content: [], isError: false };
       }
 
-      if (scopeResult.decision === "confirm") {
-        const c = scopeResult as ScopeCheckResultConfirm;
+      if (actionResult.decision === "confirm") {
+        const c = actionResult as ActionCheckResultConfirm;
         return {
           content: [{
             type: "text",
@@ -124,8 +124,8 @@ export class AllowlyMCPMiddleware {
         };
       }
 
-      if (scopeResult.decision === "escalate") {
-        const e = scopeResult as ScopeCheckResultEscalate;
+      if (actionResult.decision === "escalate") {
+        const e = actionResult as ActionCheckResultEscalate;
         return {
           content: [{
             type: "text",
@@ -142,7 +142,7 @@ export class AllowlyMCPMiddleware {
       }
 
       return {
-        content: [{ type: "text", text: JSON.stringify({ decision: scopeResult.decision, reason: scopeResult.reason }) }],
+        content: [{ type: "text", text: JSON.stringify({ decision: actionResult.decision, reason: actionResult.reason }) }],
         isError: true,
       };
     });

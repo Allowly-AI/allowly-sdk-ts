@@ -40,7 +40,7 @@ export interface PolicyEvalInfo {
   fieldValue: string | number | boolean | null;
 }
 
-export interface ScopeCheckResultBase {
+export interface ActionCheckResultBase {
   decision: Decision;
   reason: string;
   receipt: ReceiptEnvelope | null;
@@ -51,33 +51,33 @@ export interface ScopeCheckResultBase {
   policyEval: PolicyEvalInfo | null;
 }
 
-export interface ScopeCheckResultAllow extends ScopeCheckResultBase {
+export interface ActionCheckResultAllow extends ActionCheckResultBase {
   decision: "allow";
 }
 
-export interface ScopeCheckResultDeny extends ScopeCheckResultBase {
+export interface ActionCheckResultDeny extends ActionCheckResultBase {
   decision: "deny";
 }
 
-export interface ScopeCheckResultConfirm extends ScopeCheckResultBase {
+export interface ActionCheckResultConfirm extends ActionCheckResultBase {
   decision: "confirm";
   confirmNonce: string;
   confirmExpiresAt: string;
   confirmPromptHint: string;
 }
 
-export interface ScopeCheckResultEscalate extends ScopeCheckResultBase {
+export interface ActionCheckResultEscalate extends ActionCheckResultBase {
   decision: "escalate";
   escalationId: string;
   escalationTo?: string | null;
   escalationExpiresAt?: string | null;
 }
 
-export type ScopeCheckResult =
-  | ScopeCheckResultAllow
-  | ScopeCheckResultDeny
-  | ScopeCheckResultConfirm
-  | ScopeCheckResultEscalate;
+export type ActionCheckResult =
+  | ActionCheckResultAllow
+  | ActionCheckResultDeny
+  | ActionCheckResultConfirm
+  | ActionCheckResultEscalate;
 
 export interface CheckResponse {
   authorizationId: string;
@@ -85,10 +85,10 @@ export interface CheckResponse {
   agentId: string | null;
   authorizationExpiresAt: string | null;
   policyVersion: string;
-  results: Record<string, ScopeCheckResult>;
+  results: Record<string, ActionCheckResult>;
 }
 
-export interface ScopeEntry {
+export interface ActionEntry {
   name: string;
   constraints?: Record<string, unknown>;
 }
@@ -97,7 +97,7 @@ export interface AuthorizationCreateRequest {
   userId: string;
   agentId?: string;
   policyId?: string;
-  scopes?: ScopeEntry[] | string[];
+  actions?: ActionEntry[] | string[];
   requiresConfirmFor?: string[];
   requiresEscalationFor?: string[];
   escalationTargets?: Record<string, string>;
@@ -158,7 +158,7 @@ export interface AllowlyOptions {
   fetch?: typeof globalThis.fetch;
   checkTimeoutMs?: number;
   defaultFallback?: FallbackMode;
-  fallbackByScope?: Record<string, FallbackMode>;
+  fallbackByAction?: Record<string, FallbackMode>;
 }
 
 export interface FetchKeysDocOptions {
