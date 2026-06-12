@@ -21,7 +21,6 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^20.19.40",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
