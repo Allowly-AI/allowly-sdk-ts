@@ -25,7 +25,7 @@ function checkBody(action: string, result: Record<string, unknown>, extra: Recor
     user_id: "u1",
     agent_id: "a1",
     authorization_expires_at: "2026-12-31T00:00:00Z",
-    policy_version: "2026-04-19.1",
+    engine_version: "2026-04-19.1",
     ...extra,
     results: { [action]: result },
   };
@@ -231,7 +231,7 @@ describe("Allowly.check", () => {
     expect(action.receipt).toBeNull();
     expect(action.budget).toBeNull();
     expect(res.authorizationId).toBe("auth_1");
-    expect(res.policyVersion).toBe("sdk_fallback");
+    expect(res.engineVersion).toBe("sdk_fallback");
   });
 
   it("uses default fail_closed fallback for unmapped timeout action", async () => {

@@ -84,7 +84,7 @@ export interface CheckResponse {
   userId: string | null;
   agentId: string | null;
   authorizationExpiresAt: string | null;
-  policyVersion: string;
+  engineVersion: string;
   results: Record<string, ActionCheckResult>;
 }
 

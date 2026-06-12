@@ -46,7 +46,7 @@ function signedPolicyEvalReceipt() {
       rule_fired: "employment_gap",
     },
     authorization_id: "auth_conditional",
-    policy_version: "2026-06-01.2",
+    engine_version: "2026-06-01.2",
     policy_eval: {
       matched_condition: {
         field: "rule_fired",

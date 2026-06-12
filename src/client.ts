@@ -147,7 +147,7 @@ export class Allowly {
       userId: null,
       agentId: null,
       authorizationExpiresAt: null,
-      policyVersion: "sdk_fallback",
+      engineVersion: "sdk_fallback",
       results: Object.fromEntries(
         actions.map((action) => {
           const fallbackMode = this.fallbackModeForAction(action);
@@ -330,7 +330,7 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
     agentId: raw.agent_id as string,
     authorizationId: raw.authorization_id as string,
     authorizationExpiresAt: raw.authorization_expires_at as string,
-    policyVersion: raw.policy_version as string,
+    engineVersion: raw.engine_version as string,
     results: Object.fromEntries(
       Object.entries(raw.results as Record<string, Record<string, unknown>>).map(([action, result]) => [
         action,

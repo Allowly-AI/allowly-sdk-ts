@@ -35,7 +35,7 @@ const EVENT_ONLY_DECISIONS = new Set(Object.values(EVENT_DECISIONS).flatMap((dec
 const REQUIRED_FIELDS = new Set([
   "version", "receipt_id", "workspace_id", "issued_at", "decision", "reason",
   "user_id", "agent_id", "resource", "context",
-  "authorization_id", "policy_version", "signature",
+  "authorization_id", "engine_version", "signature",
 ]);
 const OPTIONAL_FIELDS = new Set(["policy_eval"]);
 const DISCRIMINATOR_FIELDS = new Set(["action", "event"]);
@@ -73,7 +73,7 @@ export interface Receipt {
   resource: string | null;
   context: Record<string, unknown>;
   authorization_id: string | null;
-  policy_version: string;
+  engine_version: string;
   policy_eval?: {
     matched_condition: {
       field: string;
@@ -305,7 +305,7 @@ function checkSchema(receipt: Record<string, unknown>): void {
 
   const stringFields = [
     "version", "receipt_id", "workspace_id", "issued_at", "decision", "reason",
-    "user_id", "agent_id", "policy_version",
+    "user_id", "agent_id", "engine_version",
   ];
   for (const f of stringFields) {
     if (typeof receipt[f] !== "string") {
