@@ -4,7 +4,7 @@ import {
   loadKeysFromJson,
   VerificationError,
   verifyReceipt,
-} from "./_verifier.js";
+} from "@allowly/verifier";
 
 /**
  * Offline Ed25519 receipt verification.
@@ -23,13 +23,13 @@ export {
   loadKeysFromJson,
   VerificationError,
   verifyReceipt,
-} from "./_verifier.js";
+} from "@allowly/verifier";
 
 export type {
   PublicKey,
   Receipt,
   KeyDocument,
-} from "./_verifier.js";
+} from "@allowly/verifier";
 
 export interface FetchKeysDocOptions {
   baseUrl?: string;

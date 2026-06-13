@@ -20,6 +20,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@allowly/verifier": "^1.0.0"
+  },
   "devDependencies": {
     "@types/node": "^20.19.40",
     "tsup": "^8.0.0",
