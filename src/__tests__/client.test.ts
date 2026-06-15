@@ -31,10 +31,6 @@ function checkBody(action: string, result: Record<string, unknown>, extra: Recor
   };
 }
 
-// ---------------------------------------------------------------------------
-// check()
-// ---------------------------------------------------------------------------
-
 describe("Allowly.check", () => {
   it("rejects insecure base URLs by default", () => {
     expect(() => new Allowly({ apiKey: "test-key", baseUrl: "http://api.example.com" }))
@@ -330,10 +326,6 @@ describe("Allowly.check", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// authorizations.create()
-// ---------------------------------------------------------------------------
-
 describe("Allowly.authorizations.create", () => {
   it("returns AuthorizationCreateResponse with receipt envelope", async () => {
     const fetch = makeFetch(201, {
@@ -455,10 +447,6 @@ describe("Allowly.authorizations.create", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// authorizations.revoke()
-// ---------------------------------------------------------------------------
-
 describe("Allowly.authorizations.revoke", () => {
   it("returns AuthorizationRevokeResponse with receipt", async () => {
     const fetch = makeFetch(200, {
@@ -485,10 +473,6 @@ describe("Allowly.authorizations.revoke", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// confirmations.approve()
-// ---------------------------------------------------------------------------
-
 describe("Allowly.confirmations", () => {
   it("approves a confirmation", async () => {
     const fetch = makeFetch(200, { decision: "approved", authorization_id: "auth_xyz", expires_at: "2026-04-20T00:01:00Z" });
@@ -505,10 +489,6 @@ describe("Allowly.confirmations", () => {
     expect(res.decision).toBe("denied_by_user");
   });
 });
-
-// ---------------------------------------------------------------------------
-// escalations.resolve()
-// ---------------------------------------------------------------------------
 
 describe("Allowly.escalations", () => {
   it("approves an escalation", async () => {
@@ -545,10 +525,6 @@ describe("Allowly.escalations", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// receipts.get()
-// ---------------------------------------------------------------------------
-
 describe("Allowly.receipts.get", () => {
   it("returns pending envelope", async () => {
     const fetch = makeFetch(200, PENDING_RECEIPT);
@@ -567,10 +543,6 @@ describe("Allowly.receipts.get", () => {
     if (r.status === "signed") expect(r.receipt).toEqual(signedReceipt);
   });
 });
-
-// ---------------------------------------------------------------------------
-// receipts.fetchSigned()
-// ---------------------------------------------------------------------------
 
 describe("Allowly.receipts.fetchSigned", () => {
   it("polls until signed and returns receipt dict", async () => {

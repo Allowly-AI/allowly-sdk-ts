@@ -416,12 +416,7 @@ function validateBaseUrl(baseUrl: string, allowInsecure: boolean): string {
 }
 
 function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name?: string }).name === "AbortError"
-  );
+  return (err as { name?: string } | null)?.name === "AbortError";
 }
 
 function sleep(ms: number): Promise<void> {

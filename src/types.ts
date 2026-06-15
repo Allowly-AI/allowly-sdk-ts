@@ -161,13 +161,6 @@ export interface AllowlyOptions {
   fallbackByAction?: Record<string, FallbackMode>;
 }
 
-export interface FetchKeysDocOptions {
-  baseUrl?: string;
-  fetch?: typeof globalThis.fetch;
-  cacheTtlMs?: number;
-  expectedSha256?: string;
-}
-
 export interface AllowlyError {
   code: string;
   message: string;

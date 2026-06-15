@@ -6,18 +6,6 @@ import {
   verifyReceipt,
 } from "@allowly/verifier";
 
-/**
- * Offline Ed25519 receipt verification.
- *
- * No network call needed — fetch the workspace public keys once, cache them,
- * verify locally forever.
- *
- *   import { verifyReceipt, loadKeysFromJson } from "@allowly/sdk/verify";
- *
- *   const keysDoc = await fetchKeysDoc(workspaceId);
- *   const keys = loadKeysFromJson(keysDoc);
- *   await verifyReceipt(signedReceipt, keys); // throws VerificationError if invalid
- */
 export {
   canonicalize,
   loadKeysFromJson,
