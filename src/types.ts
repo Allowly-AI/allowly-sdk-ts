@@ -57,6 +57,7 @@ export interface ActionCheckResultAllow extends ActionCheckResultBase {
 
 export interface ActionCheckResultDeny extends ActionCheckResultBase {
   decision: "deny";
+  supersededBy?: string | null;
 }
 
 export interface ActionCheckResultConfirm extends ActionCheckResultBase {

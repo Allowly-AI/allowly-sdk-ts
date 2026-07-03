@@ -74,12 +74,17 @@ describe("Allowly.check", () => {
 
   it("returns deny", async () => {
     const fetch = makeFetch(200, checkBody("email.send", {
-      decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT,
+      decision: "deny",
+      reason: "authorization_superseded",
+      superseded_by: "auth_new",
+      receipt: PENDING_RECEIPT,
     }, { authorization_id: "auth_nope", user_id: null, agent_id: null, authorization_expires_at: null }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.check({ authorizationId: "auth_nope", actions: ["email.send"] });
-    expect(res.results["email.send"].decision).toBe("deny");
-    expect(res.results["email.send"].reason).toBe("authorization_not_found");
+    const action = res.results["email.send"];
+    expect(action.decision).toBe("deny");
+    expect(action.reason).toBe("authorization_superseded");
+    if (action.decision === "deny") expect(action.supersededBy).toBe("auth_new");
   });
 
   it("returns confirm with nonce", async () => {

@@ -343,6 +343,7 @@ function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
           budget: parseBudgetInfo(result.budget),
           escalation: parseEscalationInfo(result.escalation),
           policyEval: parsePolicyEval(result.policy_eval),
+          supersededBy: (result.superseded_by as string | null | undefined) ?? null,
           confirmNonce: result.confirm_nonce,
           confirmExpiresAt: result.confirm_expires_at,
           confirmPromptHint: result.confirm_prompt_hint,
