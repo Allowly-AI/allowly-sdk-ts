@@ -102,35 +102,35 @@ describe("Allowly.check", () => {
   });
 
   it("parses policy_eval evidence on conditional decisions", async () => {
-    const fetch = makeFetch(200, checkBody("hiring.reject_application", {
+    const fetch = makeFetch(200, checkBody("hiring.publish_feedback", {
       decision: "confirm",
       reason: "condition_requires_user_confirmation",
       confirm_nonce: "cnf_policy",
       confirm_expires_at: "2026-04-20T00:15:00Z",
-      confirm_prompt_hint: "hiring.reject_application",
+      confirm_prompt_hint: "hiring.publish_feedback",
       policy_eval: {
         matched_condition: {
-          field: "rule_fired",
+          field: "checks_failed",
           op: "in",
-          value: ["employment_gap", "availability"],
+          value: ["pii_detected", "tone_flag"],
         },
-        field_value: "employment_gap",
+        field_value: "pii_detected",
       },
       receipt: PENDING_RECEIPT,
     }, { authorization_id: "auth_policy" }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
-    const res = await client.check({ authorizationId: "auth_policy", actions: ["hiring.reject_application"] });
-    const action = res.results["hiring.reject_application"];
+    const res = await client.check({ authorizationId: "auth_policy", actions: ["hiring.publish_feedback"] });
+    const action = res.results["hiring.publish_feedback"];
 
     expect(action.decision).toBe("confirm");
     expect(action.policyEval).toEqual({
       matchedCondition: {
-        field: "rule_fired",
+        field: "checks_failed",
         op: "in",
-        value: ["employment_gap", "availability"],
+        value: ["pii_detected", "tone_flag"],
       },
-      fieldValue: "employment_gap",
+      fieldValue: "pii_detected",
     });
   });
 

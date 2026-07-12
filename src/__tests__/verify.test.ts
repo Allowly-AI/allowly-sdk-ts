@@ -39,21 +39,21 @@ function signedPolicyEvalReceipt() {
     reason: "condition_requires_user_confirmation",
     user_id: "cand_55ab2",
     agent_id: "scout_referrals",
-    action: "hiring.reject_application",
+    action: "hiring.publish_feedback",
     resource: "application:req_2207:cand_55ab2",
     context: {
       initiated_by: "agent",
-      rule_fired: "employment_gap",
+      checks_failed: "pii_detected",
     },
     authorization_id: "auth_conditional",
     engine_version: "2026-06-01.2",
     policy_eval: {
       matched_condition: {
-        field: "rule_fired",
+        field: "checks_failed",
         op: "in",
-        value: ["employment_gap", "availability"],
+        value: ["pii_detected", "tone_flag"],
       },
-      field_value: "employment_gap",
+      field_value: "pii_detected",
     },
   };
   const signature = sign(null, canonicalize(payload), privateKey);
@@ -206,7 +206,7 @@ describe("verifyReceipt", () => {
       ...receipt,
       policy_eval: {
         matched_condition: {
-          field: "score_delta",
+          field: "transcript_completeness",
           op: "eq",
           value: Number.MAX_SAFE_INTEGER + 1,
         },
