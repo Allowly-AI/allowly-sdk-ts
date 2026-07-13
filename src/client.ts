@@ -65,13 +65,14 @@ export class Allowly {
     method: string,
     path: string,
     body?: unknown,
-    opts: { signal?: AbortSignal } = {}
+    opts: { signal?: AbortSignal; headers?: Record<string, string> } = {}
   ): Promise<T> {
     const res = await this._fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...opts.headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: opts.signal,
@@ -79,11 +80,16 @@ export class Allowly {
 
     if (res.status === 204) return undefined as T;
 
-    const json = await res.json();
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch (err) {
+      if (res.ok) throw err;
+    }
 
     if (!res.ok) {
-      const err = (json as { error?: { code: string; message: string; fields?: Array<{ field: string; message: string }> } }).error;
-      throw new AllowlyAPIError(res.status, err ?? { code: "error", message: "Unknown error" });
+      const err = (json as { error?: { code: string; message: string; fields?: Array<{ field: string; message: string }> } } | null)?.error;
+      throw new AllowlyAPIError(res.status, err ?? { code: "error", message: res.statusText || "Unknown error" });
     }
 
     return json as T;
@@ -97,6 +103,7 @@ export class Allowly {
     estimatedCostMicros?: number;
     context?: Record<string, unknown>;
     wait?: boolean;
+    idempotencyKey?: string;
   }): Promise<CheckResponse> {
     const path = "/v1/check" + (req.wait ? "?wait=true" : "");
     const controller = new AbortController();
@@ -112,6 +119,7 @@ export class Allowly {
     try {
       const raw = await this.request<Record<string, unknown>>("POST", path, body, {
         signal: controller.signal,
+        headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
       });
       return parseCheckResponse(raw);
     } catch (err) {

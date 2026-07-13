@@ -175,6 +175,14 @@ describe("Allowly.check", () => {
     expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer test-key" });
   });
 
+  it("sends idempotency key when provided", async () => {
+    const fetch = makeFetch(200, checkBody("x", { decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    await client.check({ authorizationId: "auth_1", actions: ["x"], idempotencyKey: "idem_1" });
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "idem_1" });
+  });
+
   it("does not send session_id", async () => {
     const fetch = makeFetch(200, checkBody("x", { decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -280,6 +288,20 @@ describe("Allowly.check", () => {
     expect(action.isFallback).toBe(true);
     expect(action.fallbackMode).toBe("fail_closed");
     expect(action.receipt).toBeNull();
+  });
+
+  it("returns fallback on non-JSON 5xx", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      json: async () => { throw new SyntaxError("Unexpected token <"); },
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    const res = await client.check({ authorizationId: "auth_1", actions: ["email.send"] });
+
+    expect(res.results["email.send"].reason).toBe("fallback_closed_unreachable");
   });
 
   it("supports mixed fallback modes in one check", async () => {
