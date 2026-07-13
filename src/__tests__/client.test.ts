@@ -353,6 +353,45 @@ describe("Allowly.check", () => {
   });
 });
 
+describe("Allowly.settleBudget", () => {
+  it("sends actual cost and idempotency key", async () => {
+    const fetch = makeFetch(200, {
+      check_receipt_id: "rcp_check",
+      authorization_id: "auth_1",
+      estimated_cost_micros: 30,
+      actual_cost_micros: 12,
+      delta_micros: -18,
+      spent_before_micros: 50,
+      spent_after_micros: 32,
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    const res = await client.settleBudget({
+      checkReceiptId: "rcp_check",
+      actualCostMicros: 12,
+      idempotencyKey: "settle-1",
+    });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).body).toBe(JSON.stringify({
+      check_receipt_id: "rcp_check",
+      actual_cost_micros: 12,
+    }));
+    expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "settle-1" });
+    expect(res).toMatchObject({
+      checkReceiptId: "rcp_check",
+      authorizationId: "auth_1",
+      estimatedCostMicros: 30,
+      actualCostMicros: 12,
+      deltaMicros: -18,
+      spentBeforeMicros: 50,
+      spentAfterMicros: 32,
+    });
+    expect(res.receipt.status).toBe("pending");
+  });
+});
+
 describe("Allowly.authorizations.create", () => {
   it("returns AuthorizationCreateResponse with receipt envelope", async () => {
     const fetch = makeFetch(201, {

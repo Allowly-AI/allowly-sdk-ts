@@ -5,6 +5,7 @@ export * from "./verify.js";
 export type {
   AllowlyOptions,
   BudgetInfo,
+  BudgetSettlementResponse,
   EscalationInfo,
   EscalationResolveRequest,
   EscalationResolveResponse,

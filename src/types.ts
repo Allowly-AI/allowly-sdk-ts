@@ -22,6 +22,17 @@ export interface BudgetInfo {
   spentAfterMicros?: number | null;
 }
 
+export interface BudgetSettlementResponse {
+  checkReceiptId: string;
+  authorizationId: string;
+  estimatedCostMicros: number;
+  actualCostMicros: number;
+  deltaMicros: number;
+  spentBeforeMicros: number;
+  spentAfterMicros: number;
+  receipt: ReceiptEnvelope;
+}
+
 export interface EscalationInfo {
   escalationId: string;
   status: string;

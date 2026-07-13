@@ -9,6 +9,7 @@ import type {
   ConfirmationApproveRequest,
   ConfirmationApproveResponse,
   BudgetInfo,
+  BudgetSettlementResponse,
   EscalationInfo,
   PolicyConditionEvidence,
   PolicyEvalInfo,
@@ -139,6 +140,25 @@ export class Allowly {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async settleBudget(req: {
+    checkReceiptId: string;
+    actualCostMicros: number;
+    idempotencyKey?: string;
+  }): Promise<BudgetSettlementResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      "/v1/budget-settlements",
+      {
+        check_receipt_id: req.checkReceiptId,
+        actual_cost_micros: req.actualCostMicros,
+      },
+      {
+        headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
+      }
+    );
+    return parseBudgetSettlementResponse(raw);
   }
 
   private fallbackModeForAction(action: string): FallbackMode {
@@ -372,6 +392,19 @@ function parseBudgetInfo(raw: unknown): BudgetInfo | null {
     spentMicros: budget.spent_micros as number,
     estimatedCostMicros: budget.estimated_cost_micros as number,
     spentAfterMicros: (budget.spent_after_micros as number | undefined) ?? null,
+  };
+}
+
+function parseBudgetSettlementResponse(raw: Record<string, unknown>): BudgetSettlementResponse {
+  return {
+    checkReceiptId: raw.check_receipt_id as string,
+    authorizationId: raw.authorization_id as string,
+    estimatedCostMicros: raw.estimated_cost_micros as number,
+    actualCostMicros: raw.actual_cost_micros as number,
+    deltaMicros: raw.delta_micros as number,
+    spentBeforeMicros: raw.spent_before_micros as number,
+    spentAfterMicros: raw.spent_after_micros as number,
+    receipt: parseReceiptEnvelope(raw.receipt as Record<string, unknown>),
   };
 }
 
