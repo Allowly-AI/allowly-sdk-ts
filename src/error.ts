@@ -13,3 +13,10 @@ export class AllowlyAPIError extends Error {
     this.fields = error.fields;
   }
 }
+
+export class AllowlyProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AllowlyProtocolError";
+  }
+}

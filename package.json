@@ -2,21 +2,21 @@
   "name": "@allowly/sdk",
   "version": "0.1.1",
   "description": "TypeScript SDK for the Allowly API",
+  "type": "module",
   "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": "./dist/index.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "prepack": "npm run build && node --input-type=module -e \"const sdk = await import('@allowly/sdk'); if (typeof sdk.Allowly !== 'function') process.exit(1)\"",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -30,7 +30,7 @@
     "vitest": "^1.6.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "license": "MIT"
 }

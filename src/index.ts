@@ -1,5 +1,5 @@
 export { Allowly } from "./client.js";
-export { AllowlyAPIError } from "./error.js";
+export { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
 export * as identifiers from "./identifiers.js";
 export * from "./verify.js";
 export type {

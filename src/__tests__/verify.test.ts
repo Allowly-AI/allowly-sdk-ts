@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
   canonicalize,
   clearKeysDocCache,
@@ -21,6 +21,13 @@ const VALID_DOC = {
     },
   ],
 };
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 function b64url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64url");
@@ -93,11 +100,7 @@ describe("fetchKeysDoc", () => {
   });
 
   it("caches documents for five minutes by default", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(VALID_DOC),
-    });
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(VALID_DOC));
     const first = await fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com" });
     const second = await fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com" });
 
@@ -107,11 +110,7 @@ describe("fetchKeysDoc", () => {
   });
 
   it("zero cacheTtlMs bypasses stale cache", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(VALID_DOC),
-    });
+    const fetch = vi.fn().mockImplementation(async () => jsonResponse(VALID_DOC));
     await fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com", cacheTtlMs: 300_000 });
     await fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com", cacheTtlMs: 0 });
 
@@ -119,11 +118,7 @@ describe("fetchKeysDoc", () => {
   });
 
   it("returned doc is isolated from the cache", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(VALID_DOC),
-    });
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(VALID_DOC));
     const first = await fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com" });
     first.keys.length = 0;
 
@@ -133,11 +128,7 @@ describe("fetchKeysDoc", () => {
   });
 
   it("rejects hash-pin mismatches", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(VALID_DOC),
-    });
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(VALID_DOC));
     await expect(
       fetchKeysDoc("ws_1", {
         fetch,
@@ -147,12 +138,26 @@ describe("fetchKeysDoc", () => {
     ).rejects.toThrow("SHA-256");
   });
 
+  it("hashes the downloaded bytes", async () => {
+    const body = JSON.stringify(VALID_DOC);
+    const fetch = vi.fn().mockResolvedValue(new Response(body, { status: 200 }));
+    const expectedSha256 = createHash("sha256").update(Buffer.from(body)).digest("hex");
+
+    await expect(fetchKeysDoc("ws_1", {
+      fetch,
+      baseUrl: "https://api.example.com",
+      expectedSha256,
+    })).resolves.toEqual(VALID_DOC);
+  });
+
+  it("encodes workspace IDs in the URL", async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ ...VALID_DOC, workspace_id: "ws/1" }));
+    await fetchKeysDoc("ws/1", { fetch, baseUrl: "https://api.example.com" });
+    expect(fetch.mock.calls[0][0]).toBe("https://api.example.com/v1/workspaces/ws%2F1/keys");
+  });
+
   it("rejects workspace_id mismatches", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ ...VALID_DOC, workspace_id: "ws_other" }),
-    });
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ ...VALID_DOC, workspace_id: "ws_other" }));
 
     await expect(
       fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com" }),
@@ -177,7 +182,10 @@ describe("verifyReceipt", () => {
     const keys = loadKeysFromJson(keysDoc);
 
     await expect(
-      verifyReceipt(receipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+      verifyReceipt(receipt, keys, {
+        expectedWorkspaceId: "ws_1",
+        now: new Date("2026-06-09T17:05:00Z"),
+      }),
     ).resolves.toBeUndefined();
   });
 
@@ -195,7 +203,10 @@ describe("verifyReceipt", () => {
     delete eventReceipt.action;
 
     await expect(
-      verifyReceipt(eventReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+      verifyReceipt(eventReceipt, keys, {
+        expectedWorkspaceId: "ws_1",
+        now: new Date("2026-06-09T17:05:00Z"),
+      }),
     ).rejects.toThrow("policy_eval must be absent on event receipts");
   });
 
@@ -215,7 +226,10 @@ describe("verifyReceipt", () => {
     };
 
     await expect(
-      verifyReceipt(badReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+      verifyReceipt(badReceipt, keys, {
+        expectedWorkspaceId: "ws_1",
+        now: new Date("2026-06-09T17:05:00Z"),
+      }),
     ).rejects.toThrow("integer exceeds the safe range");
   });
 
@@ -231,7 +245,19 @@ describe("verifyReceipt", () => {
 
     const badReceipt = { ...receipt, issued_at: "2026-06-09T17:04:39.114" };
     await expect(
-      verifyReceipt(badReceipt, keys, { now: new Date("2026-06-09T17:05:00Z") }),
+      verifyReceipt(badReceipt, keys, {
+        expectedWorkspaceId: "ws_1",
+        now: new Date("2026-06-09T17:05:00Z"),
+      }),
     ).rejects.toThrow("not an RFC 3339 timestamp with timezone");
+  });
+
+  it("rejects receipts from another workspace", async () => {
+    const { keysDoc, receipt } = signedPolicyEvalReceipt();
+    const keys = loadKeysFromJson(keysDoc);
+    await expect(verifyReceipt(receipt, keys, {
+      expectedWorkspaceId: "ws_other",
+      now: new Date("2026-06-09T17:05:00Z"),
+    })).rejects.toThrow("workspace_id");
   });
 });

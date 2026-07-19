@@ -1,4 +1,4 @@
-import { AllowlyAPIError } from "./error.js";
+import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
 import type {
   AllowlyOptions,
   CheckResponse,
@@ -17,17 +17,27 @@ import type {
   EscalationResolveResponse,
   ReceiptEnvelope,
   ReceiptEnvelopePending,
-  ReceiptEnvelopeSigned,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.allowly.ai";
 const DEFAULT_CHECK_TIMEOUT_MS = 1000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+class AllowlyTransportError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("Allowly request failed");
+    this.cause = cause;
+  }
+}
 
 export class Allowly {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly _fetch: typeof globalThis.fetch;
   private readonly checkTimeoutMs: number;
+  private readonly requestTimeoutMs: number;
   private readonly defaultFallback: FallbackMode;
   private readonly fallbackByAction: Record<string, FallbackMode>;
 
@@ -46,6 +56,10 @@ export class Allowly {
     this.checkTimeoutMs = options.checkTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
     if (this.checkTimeoutMs <= 0) {
       throw new Error("checkTimeoutMs must be positive");
+    }
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    if (this.requestTimeoutMs <= 0) {
+      throw new Error("requestTimeoutMs must be positive");
     }
     this.defaultFallback = validateFallbackMode(options.defaultFallback ?? "fail_closed");
     this.fallbackByAction = Object.fromEntries(
@@ -68,16 +82,23 @@ export class Allowly {
     body?: unknown,
     opts: { signal?: AbortSignal; headers?: Record<string, string> } = {}
   ): Promise<T> {
-    const res = await this._fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-        ...opts.headers,
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: opts.signal,
-    });
+    const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
+    let res: Response;
+    try {
+      res = await this._fetch(`${this.baseUrl}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...opts.headers,
+        },
+        body: serializedBody,
+        signal: opts.signal ?? AbortSignal.timeout(this.requestTimeoutMs),
+      });
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      throw new AllowlyTransportError(err);
+    }
 
     if (res.status === 204) return undefined as T;
 
@@ -108,7 +129,8 @@ export class Allowly {
   }): Promise<CheckResponse> {
     const path = "/v1/check" + (req.wait ? "?wait=true" : "");
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.checkTimeoutMs);
+    const timeoutMs = req.wait ? Math.max(this.checkTimeoutMs, 6000) : this.checkTimeoutMs;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const body = {
       authorization_id: req.authorizationId,
       actions: req.actions,
@@ -133,7 +155,7 @@ export class Allowly {
         }
         throw err;
       }
-      if (err instanceof TypeError) {
+      if (err instanceof AllowlyTransportError) {
         return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable");
       }
       throw err;
@@ -190,6 +212,7 @@ export class Allowly {
               fallbackMode,
               budget: null,
               escalation: null,
+              policyEval: null,
             },
           ];
         })
@@ -208,36 +231,50 @@ class AuthorizationsResource {
         ? { name: s, constraints: {} }
         : { name: s.name, constraints: s.constraints ?? {} }
     );
-    const raw = await this.client.request<Record<string, unknown>>("POST", "/v1/authorizations", {
-      user_id: req.userId,
-      agent_id: req.agentId,
-      policy_id: req.policyId,
-      actions,
-      requires_confirm_for: req.requiresConfirmFor ?? [],
-      requires_escalation_for: req.requiresEscalationFor ?? [],
-      escalation_targets: req.escalationTargets ?? {},
-      budget_limit_micros: req.budgetLimitMicros,
-      expires_at: expiresAt,
-      replaces: req.replaces,
-      metadata: req.metadata ?? {},
-    });
+    const raw = await this.client.request<Record<string, unknown>>(
+      "POST",
+      "/v1/authorizations",
+      {
+        user_id: req.userId,
+        agent_id: req.agentId,
+        policy_id: req.policyId,
+        actions,
+        requires_confirm_for: req.requiresConfirmFor ?? [],
+        requires_escalation_for: req.requiresEscalationFor ?? [],
+        requires_deny_for: req.requiresDenyFor ?? [],
+        escalation_targets: req.escalationTargets ?? {},
+        budget_limit_micros: req.budgetLimitMicros,
+        expires_at: expiresAt,
+        replaces: req.replaces,
+        metadata: req.metadata ?? {},
+      },
+      {
+        headers: req.idempotencyKey !== undefined
+          ? { "Idempotency-Key": req.idempotencyKey }
+          : undefined,
+      },
+    );
     return {
-      authorizationId: raw.authorization_id as string,
-      policyId: raw.policy_id as string | undefined,
-      createdAt: raw.created_at as string,
-      expiresAt: raw.expires_at as string,
-      receipt: parsePendingEnvelope(raw.receipt as Record<string, unknown>),
-      requiresConfirmFor: (raw.requires_confirm_for as string[] | undefined) ?? [],
+      authorizationId: requireString(raw, "authorization_id"),
+      policyId: optionalString(raw, "policy_id"),
+      createdAt: requireString(raw, "created_at"),
+      expiresAt: requireString(raw, "expires_at"),
+      receipt: parsePendingEnvelope(raw.receipt),
       requiresEscalationFor: (raw.requires_escalation_for as string[] | undefined) ?? [],
+      requiresDenyFor: (raw.requires_deny_for as string[] | undefined) ?? [],
       escalationTargets: (raw.escalation_targets as Record<string, string> | undefined) ?? {},
-      budgetLimitMicros: raw.budget_limit_micros as number | undefined,
-      budgetSpentMicros: raw.budget_spent_micros as number | undefined,
+      budgetLimitMicros: optionalNumber(raw, "budget_limit_micros"),
+      budgetSpentMicros: optionalNumber(raw, "budget_spent_micros"),
+      replacedAuthorizationId: optionalString(raw, "replaced_authorization_id"),
+      revocationReceipt: raw.revocation_receipt == null
+        ? null
+        : parsePendingEnvelope(raw.revocation_receipt),
     };
   }
 
   async revoke(
     authorizationId: string,
-    opts: { revokedBy?: string; supersededBy?: string; notes?: string } = {}
+    opts: { revokedBy?: string; supersededBy?: string; notes?: string; idempotencyKey?: string } = {}
   ): Promise<AuthorizationRevokeResponse> {
     const body: Record<string, string> = {};
     if (opts.revokedBy) body.revoked_by = opts.revokedBy;
@@ -246,12 +283,18 @@ class AuthorizationsResource {
     const raw = await this.client.request<Record<string, unknown>>(
       "DELETE",
       `/v1/authorizations/${authorizationId}`,
-      Object.keys(body).length ? body : undefined
+      Object.keys(body).length ? body : undefined,
+      {
+        headers: opts.idempotencyKey !== undefined
+          ? { "Idempotency-Key": opts.idempotencyKey }
+          : undefined,
+      },
     );
     return {
-      authorizationId: raw.authorization_id as string,
-      revokedAt: raw.revoked_at as string,
-      receipt: parsePendingEnvelope(raw.receipt as Record<string, unknown>),
+      authorizationId: requireString(raw, "authorization_id"),
+      revokedAt: requireString(raw, "revoked_at"),
+      receipt: parsePendingEnvelope(raw.receipt),
+      revokedConfirmations: (raw.revoked_confirmations as string[] | undefined) ?? [],
     };
   }
 }
@@ -263,12 +306,23 @@ class ConfirmationsResource {
     const raw = await this.client.request<Record<string, unknown>>(
       "POST",
       `/v1/confirmations/${nonce}`,
-      { approved: req.approved, ttl_seconds: req.ttlSeconds ?? 60 }
+      { approved: req.approved, ttl_seconds: req.ttlSeconds ?? 60 },
+      {
+        headers: req.idempotencyKey !== undefined
+          ? { "Idempotency-Key": req.idempotencyKey }
+          : undefined,
+      },
     );
+    const decision = requireString(raw, "decision");
+    if (decision !== "approved" && decision !== "denied_by_user") {
+      throw new AllowlyProtocolError(`unknown confirmation decision: ${JSON.stringify(decision)}`);
+    }
     return {
-      decision: raw.decision as "approved" | "denied_by_user",
-      authorizationId: raw.authorization_id as string | undefined,
-      expiresAt: raw.expires_at as string | undefined,
+      decision,
+      authorizationId: raw.authorization_id == null
+        ? undefined
+        : requireString(raw, "authorization_id"),
+      expiresAt: raw.expires_at == null ? undefined : requireString(raw, "expires_at"),
     };
   }
 }
@@ -286,12 +340,16 @@ class EscalationsResource {
         note: req.note ?? null,
       }
     );
+    const status = requireString(raw, "status");
+    if (status !== "approved" && status !== "rejected") {
+      throw new AllowlyProtocolError(`unknown escalation status: ${JSON.stringify(status)}`);
+    }
     return {
-      escalationId: raw.escalation_id as string,
-      status: raw.status as "approved" | "rejected",
-      resolvedBy: raw.resolved_by as string | null | undefined,
-      resolvedAt: raw.resolved_at as string | null | undefined,
-      receipt: raw.receipt ? parsePendingEnvelope(raw.receipt as Record<string, unknown>) : null,
+      escalationId: requireString(raw, "escalation_id"),
+      status,
+      resolvedBy: optionalString(raw, "resolved_by"),
+      resolvedAt: optionalString(raw, "resolved_at"),
+      receipt: raw.receipt ? parsePendingEnvelope(raw.receipt) : null,
     };
   }
 
@@ -314,7 +372,16 @@ class ReceiptsResource {
   constructor(private readonly client: Allowly) {}
 
   async get(receiptId: string): Promise<ReceiptEnvelope> {
-    const raw = await this.client.request<Record<string, unknown>>("GET", `/v1/receipts/${receiptId}`);
+    return this.getWithSignal(receiptId);
+  }
+
+  private async getWithSignal(receiptId: string, signal?: AbortSignal): Promise<ReceiptEnvelope> {
+    const raw = await this.client.request<Record<string, unknown>>(
+      "GET",
+      `/v1/receipts/${receiptId}`,
+      undefined,
+      { signal },
+    );
     return parseReceiptEnvelope(raw);
   }
 
@@ -323,65 +390,143 @@ class ReceiptsResource {
     opts: { pollInterval?: number; timeout?: number } = {}
   ): Promise<Record<string, unknown>> {
     const pollInterval = (opts.pollInterval ?? 1) * 1000;
-    const deadline = Date.now() + (opts.timeout ?? 30) * 1000;
+    const timeoutSeconds = opts.timeout ?? 30;
+    if (pollInterval <= 0) throw new Error("pollInterval must be positive");
+    if (timeoutSeconds <= 0) throw new Error("timeout must be positive");
 
-    while (Date.now() < deadline) {
-      const envelope = await this.get(receiptId);
-      if (envelope.status === "signed") return (envelope as ReceiptEnvelopeSigned).receipt;
-      await sleep(pollInterval);
+    const timeoutMs = timeoutSeconds * 1000;
+    const deadline = Date.now() + timeoutMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      while (Date.now() < deadline) {
+        try {
+          const envelope = await this.getWithSignal(receiptId, controller.signal);
+          if (envelope.status === "signed") return envelope.receipt;
+        } catch (err) {
+          if (isAbortError(err)) break;
+          throw err;
+        }
+        await sleep(Math.min(pollInterval, Math.max(0, deadline - Date.now())));
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    throw new Error(`Receipt ${receiptId} not signed after ${opts.timeout ?? 30}s`);
+    throw new Error(`Receipt ${receiptId} not signed after ${timeoutSeconds}s`);
   }
 }
 
-function parsePendingEnvelope(raw: Record<string, unknown>): ReceiptEnvelopePending {
+function parsePendingEnvelope(value: unknown): ReceiptEnvelopePending {
+  const raw = requireRecord(value, "pending receipt envelope");
+  if (raw.status !== "pending") {
+    throw new AllowlyProtocolError("receipt status must be 'pending'");
+  }
   return {
     status: "pending",
-    receiptId: raw.receipt_id as string,
-    readyAtEstimate: raw.ready_at_estimate as string,
-    url: raw.url as string,
+    receiptId: optionalString(raw, "receipt_id"),
+    readyAtEstimate: optionalString(raw, "ready_at_estimate"),
+    url: optionalString(raw, "url"),
   };
 }
 
-function parseReceiptEnvelope(raw: Record<string, unknown>): ReceiptEnvelope {
+function parseReceiptEnvelope(value: unknown): ReceiptEnvelope {
+  const raw = requireRecord(value, "receipt envelope");
   if (raw.status === "signed") {
-    return { status: "signed", receipt: raw.receipt as Record<string, unknown> };
+    return { status: "signed", receipt: requireRecord(raw.receipt, "signed receipt") };
   }
-  return parsePendingEnvelope(raw);
+  if (raw.status === "pending") return parsePendingEnvelope(raw);
+  throw new AllowlyProtocolError("receipt status must be 'pending' or 'signed'");
 }
 
-function parseCheckResponse(raw: Record<string, unknown>): CheckResponse {
+function parseCheckResponse(value: unknown): CheckResponse {
   // The API returns a map keyed by requested action. Preserve those keys so
   // callers can safely handle mixed allow/deny/confirm/escalate results in one check.
+  const raw = requireRecord(value, "check response");
+  const rawResults = requireRecord(raw.results, "check results");
   return {
-    userId: raw.user_id as string,
-    agentId: raw.agent_id as string,
-    authorizationId: raw.authorization_id as string,
-    authorizationExpiresAt: raw.authorization_expires_at as string,
-    engineVersion: raw.engine_version as string,
+    userId: optionalString(raw, "user_id"),
+    agentId: optionalString(raw, "agent_id"),
+    authorizationId: requireString(raw, "authorization_id"),
+    authorizationExpiresAt: optionalString(raw, "authorization_expires_at"),
+    engineVersion: requireString(raw, "engine_version"),
     results: Object.fromEntries(
-      Object.entries(raw.results as Record<string, Record<string, unknown>>).map(([action, result]) => [
-        action,
-        {
-          decision: result.decision,
-          reason: result.reason,
-          receipt: parseReceiptEnvelope(result.receipt as Record<string, unknown>),
+      Object.entries(rawResults).map(([action, value]) => {
+        const result = requireRecord(value, `check result ${JSON.stringify(action)}`);
+        const decision = requireString(result, "decision");
+        const base = {
+          reason: requireString(result, "reason"),
+          receipt: parseReceiptEnvelope(result.receipt),
           isFallback: Boolean(result.is_fallback ?? false),
           fallbackMode: (result.fallback_mode as FallbackMode | null | undefined) ?? null,
           budget: parseBudgetInfo(result.budget),
           escalation: parseEscalationInfo(result.escalation),
           policyEval: parsePolicyEval(result.policy_eval),
-          supersededBy: (result.superseded_by as string | null | undefined) ?? null,
-          confirmNonce: result.confirm_nonce,
-          confirmExpiresAt: result.confirm_expires_at,
-          confirmPromptHint: result.confirm_prompt_hint,
-          escalationId: result.escalation_id,
-          escalationTo: result.escalation_to,
-          escalationExpiresAt: result.escalation_expires_at,
-        },
-      ])
+        };
+
+        if (decision === "allow") return [action, { ...base, decision }];
+        if (decision === "deny") {
+          return [action, {
+            ...base,
+            decision,
+            supersededBy: optionalString(result, "superseded_by"),
+          }];
+        }
+        if (decision === "confirm") {
+          return [action, {
+            ...base,
+            decision,
+            confirmNonce: requireString(result, "confirm_nonce"),
+            confirmExpiresAt: requireString(result, "confirm_expires_at"),
+            confirmPromptHint: requireString(result, "confirm_prompt_hint"),
+          }];
+        }
+        if (decision === "escalate") {
+          return [action, {
+            ...base,
+            decision,
+            escalationId: requireString(result, "escalation_id"),
+            escalationTo: optionalString(result, "escalation_to"),
+            escalationExpiresAt: optionalString(result, "escalation_expires_at"),
+          }];
+        }
+        throw new AllowlyProtocolError(`unknown check decision: ${JSON.stringify(decision)}`);
+      })
     ) as CheckResponse["results"],
   };
+}
+
+function requireRecord(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AllowlyProtocolError(`${name} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(raw: Record<string, unknown>, key: string): string {
+  const value = raw[key];
+  if (typeof value !== "string") {
+    throw new AllowlyProtocolError(`${key} must be a string`);
+  }
+  return value;
+}
+
+function optionalString(raw: Record<string, unknown>, key: string): string | null {
+  const value = raw[key];
+  if (value == null) return null;
+  if (typeof value !== "string") {
+    throw new AllowlyProtocolError(`${key} must be a string or null`);
+  }
+  return value;
+}
+
+function optionalNumber(raw: Record<string, unknown>, key: string): number | null {
+  const value = raw[key];
+  if (value == null) return null;
+  if (typeof value !== "number") {
+    throw new AllowlyProtocolError(`${key} must be a number or null`);
+  }
+  return value;
 }
 
 function parseBudgetInfo(raw: unknown): BudgetInfo | null {
@@ -458,7 +603,8 @@ function validateBaseUrl(baseUrl: string, allowInsecure: boolean): string {
 }
 
 function isAbortError(err: unknown): boolean {
-  return (err as { name?: string } | null)?.name === "AbortError";
+  const name = (err as { name?: string } | null)?.name;
+  return name === "AbortError" || name === "TimeoutError";
 }
 
 function sleep(ms: number): Promise<void> {

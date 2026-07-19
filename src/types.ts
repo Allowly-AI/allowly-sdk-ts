@@ -3,9 +3,9 @@ export type FallbackMode = "fail_open" | "fail_closed";
 
 export interface ReceiptEnvelopePending {
   status: "pending";
-  receiptId: string;
-  readyAtEstimate: string;
-  url: string;
+  receiptId: string | null;
+  readyAtEstimate: string | null;
+  url: string | null;
 }
 
 export interface ReceiptEnvelopeSigned {
@@ -112,35 +112,41 @@ export interface AuthorizationCreateRequest {
   actions?: ActionEntry[] | string[];
   requiresConfirmFor?: string[];
   requiresEscalationFor?: string[];
+  requiresDenyFor?: string[];
   escalationTargets?: Record<string, string>;
   budgetLimitMicros?: number;
   expiresAt?: Date | string;
   replaces?: string;
   metadata?: Record<string, unknown>;
+  idempotencyKey?: string;
 }
 
 export interface AuthorizationCreateResponse {
   authorizationId: string;
-  policyId?: string;
+  policyId: string | null;
   createdAt: string;
   expiresAt: string;
   receipt: ReceiptEnvelopePending;
-  requiresConfirmFor: string[];
   requiresEscalationFor: string[];
+  requiresDenyFor: string[];
   escalationTargets: Record<string, string>;
-  budgetLimitMicros?: number;
-  budgetSpentMicros?: number;
+  budgetLimitMicros: number | null;
+  budgetSpentMicros: number | null;
+  replacedAuthorizationId: string | null;
+  revocationReceipt: ReceiptEnvelopePending | null;
 }
 
 export interface AuthorizationRevokeResponse {
   authorizationId: string;
   revokedAt: string;
   receipt: ReceiptEnvelopePending;
+  revokedConfirmations: string[];
 }
 
 export interface ConfirmationApproveRequest {
   approved: boolean;
   ttlSeconds?: number;
+  idempotencyKey?: string;
 }
 
 export interface ConfirmationApproveResponse {
@@ -169,6 +175,7 @@ export interface AllowlyOptions {
   dangerouslyAllowInsecureBaseUrl?: boolean;
   fetch?: typeof globalThis.fetch;
   checkTimeoutMs?: number;
+  requestTimeoutMs?: number;
   defaultFallback?: FallbackMode;
   fallbackByAction?: Record<string, FallbackMode>;
 }

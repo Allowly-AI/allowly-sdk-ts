@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { Allowly, AllowlyAPIError } from "../index.js";
+import { Allowly, AllowlyAPIError, AllowlyProtocolError } from "../index.js";
 
 const BASE = "https://api.example.com";
 const CLIENT_OPTS = { apiKey: "test-key", baseUrl: BASE };
@@ -45,6 +45,11 @@ describe("Allowly.check", () => {
         dangerouslyAllowInsecureBaseUrl: true,
       }),
     ).not.toThrow();
+  });
+
+  it("rejects non-positive request timeouts", () => {
+    expect(() => new Allowly({ ...CLIENT_OPTS, requestTimeoutMs: 0 }))
+      .toThrow("requestTimeoutMs must be positive");
   });
 
   it("returns allow with pending receipt envelope", async () => {
@@ -220,6 +225,41 @@ describe("Allowly.check", () => {
     });
   });
 
+  it("does not fail open on a malformed successful response", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(200, {}),
+      defaultFallback: "fail_open",
+    });
+    await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
+      .rejects.toThrow(AllowlyProtocolError);
+  });
+
+  it("does not fail open on local JSON serialization errors", async () => {
+    const fetch = vi.fn();
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+    const context: Record<string, unknown> = {};
+    context.self = context;
+
+    await expect(client.check({
+      authorizationId: "auth_1",
+      actions: ["payments.send"],
+      context,
+    })).rejects.toThrow(TypeError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown decisions", async () => {
+    const fetch = makeFetch(200, checkBody("payments.send", {
+      decision: "future_value",
+      reason: "bad response",
+      receipt: PENDING_RECEIPT,
+    }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+    await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
+      .rejects.toThrow("unknown check decision");
+  });
+
   it("returns fail_open fallback on timeout", async () => {
     const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
     const fetch = vi.fn().mockRejectedValue(abortError);
@@ -239,8 +279,33 @@ describe("Allowly.check", () => {
     expect(action.fallbackMode).toBe("fail_open");
     expect(action.receipt).toBeNull();
     expect(action.budget).toBeNull();
+    expect(action.policyEval).toBeNull();
     expect(res.authorizationId).toBe("auth_1");
     expect(res.engineVersion).toBe("sdk_fallback");
+  });
+
+  it("keeps wait checks alive for the server wait window", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+        signal = init?.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          }, { once: true });
+        });
+      });
+      const client = new Allowly({ ...CLIENT_OPTS, fetch, checkTimeoutMs: 1 });
+      const pending = client.check({ authorizationId: "auth_1", actions: ["x"], wait: true });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(5000);
+      await expect(pending).resolves.toMatchObject({ engineVersion: "sdk_fallback" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses default fail_closed fallback for unmapped timeout action", async () => {
@@ -393,6 +458,16 @@ describe("Allowly.settleBudget", () => {
 });
 
 describe("Allowly.authorizations.create", () => {
+  it("applies the default request timeout path", async () => {
+    const fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal as AbortSignal;
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, requestTimeoutMs: 1 });
+    await expect(client.authorizations.create({ userId: "u1" }))
+      .rejects.toMatchObject({ name: "TimeoutError" });
+  });
+
   it("returns AuthorizationCreateResponse with receipt envelope", async () => {
     const fetch = makeFetch(201, {
       authorization_id: "auth_new",
@@ -442,24 +517,34 @@ describe("Allowly.authorizations.create", () => {
       created_at: "2026-04-20T00:00:00Z",
       expires_at: "2026-12-31T00:00:00Z",
       requires_escalation_for: ["candidate.delete"],
+      requires_deny_for: ["email.send"],
       escalation_targets: { "candidate.delete": "compliance" },
+      replaced_authorization_id: "auth_old",
+      revocation_receipt: PENDING_RECEIPT,
       receipt: PENDING_RECEIPT,
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.authorizations.create({
       userId: "u1",
       agentId: "a1",
-      actions: ["candidate.delete"],
+      actions: ["candidate.delete", "email.send"],
       requiresEscalationFor: ["candidate.delete"],
+      requiresDenyFor: ["email.send"],
       escalationTargets: { "candidate.delete": "compliance" },
+      idempotencyKey: "create-1",
     });
 
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.requires_escalation_for).toEqual(["candidate.delete"]);
+    expect(body.requires_deny_for).toEqual(["email.send"]);
     expect(body.escalation_targets).toEqual({ "candidate.delete": "compliance" });
+    expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "create-1" });
     expect(res.requiresEscalationFor).toEqual(["candidate.delete"]);
+    expect(res.requiresDenyFor).toEqual(["email.send"]);
     expect(res.escalationTargets).toEqual({ "candidate.delete": "compliance" });
+    expect(res.replacedAuthorizationId).toBe("auth_old");
+    expect(res.revocationReceipt?.status).toBe("pending");
   });
 
   it("sends supersession lineage on create", async () => {
@@ -517,12 +602,19 @@ describe("Allowly.authorizations.revoke", () => {
   it("returns AuthorizationRevokeResponse with receipt", async () => {
     const fetch = makeFetch(200, {
       authorization_id: "auth_123", revoked_at: "2026-05-01T09:00:00Z", receipt: PENDING_RECEIPT,
+      revoked_confirmations: ["auth_child"],
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.authorizations.revoke("auth_123", { revokedBy: "user" });
+    const res = await client.authorizations.revoke("auth_123", {
+      revokedBy: "user",
+      idempotencyKey: "revoke-1",
+    });
     expect(res.authorizationId).toBe("auth_123");
     expect(res.revokedAt).toBe("2026-05-01T09:00:00Z");
     expect(res.receipt.status).toBe("pending");
+    expect(res.revokedConfirmations).toEqual(["auth_child"]);
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "revoke-1" });
   });
 
   it("sends supersededBy on revoke", async () => {
@@ -543,9 +635,14 @@ describe("Allowly.confirmations", () => {
   it("approves a confirmation", async () => {
     const fetch = makeFetch(200, { decision: "approved", authorization_id: "auth_xyz", expires_at: "2026-04-20T00:01:00Z" });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.confirmations.approve("nonce123", { approved: true });
+    const res = await client.confirmations.approve("nonce123", {
+      approved: true,
+      idempotencyKey: "confirm-1",
+    });
     expect(res.decision).toBe("approved");
     expect(res.authorizationId).toBe("auth_xyz");
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "confirm-1" });
   });
 
   it("handles denied_by_user", async () => {
@@ -608,6 +705,11 @@ describe("Allowly.receipts.get", () => {
     expect(r.status).toBe("signed");
     if (r.status === "signed") expect(r.receipt).toEqual(signedReceipt);
   });
+
+  it("rejects unknown envelope status", async () => {
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, { status: "lost" }) });
+    await expect(client.receipts.get("rcp_abc")).rejects.toThrow(AllowlyProtocolError);
+  });
 });
 
 describe("Allowly.receipts.fetchSigned", () => {
@@ -633,5 +735,13 @@ describe("Allowly.receipts.fetchSigned", () => {
     await expect(
       client.receipts.fetchSigned("rcp_abc", { pollInterval: 0.001, timeout: 0.005 })
     ).rejects.toThrow("not signed after");
+  });
+
+  it("rejects non-positive polling options", async () => {
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, PENDING_RECEIPT) });
+    await expect(client.receipts.fetchSigned("rcp_abc", { pollInterval: 0 }))
+      .rejects.toThrow("pollInterval must be positive");
+    await expect(client.receipts.fetchSigned("rcp_abc", { timeout: 0 }))
+      .rejects.toThrow("timeout must be positive");
   });
 });
