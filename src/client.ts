@@ -23,11 +23,12 @@ const DEFAULT_BASE_URL = "https://api.allowly.ai";
 const DEFAULT_CHECK_TIMEOUT_MS = 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
-class AllowlyTransportError extends Error {
+export class AllowlyTransportError extends Error {
   readonly cause: unknown;
 
   constructor(cause: unknown) {
     super("Allowly request failed");
+    this.name = "AllowlyTransportError";
     this.cause = cause;
   }
 }
@@ -110,8 +111,28 @@ export class Allowly {
     }
 
     if (!res.ok) {
-      const err = (json as { error?: { code: string; message: string; fields?: Array<{ field: string; message: string }> } } | null)?.error;
-      throw new AllowlyAPIError(res.status, err ?? { code: "error", message: res.statusText || "Unknown error" });
+      const rawError = json && typeof json === "object"
+        ? (json as Record<string, unknown>).error
+        : undefined;
+      if (typeof rawError === "string") {
+        throw new AllowlyAPIError(res.status, { code: "error", message: rawError });
+      }
+      const error = rawError && typeof rawError === "object"
+        ? rawError as Record<string, unknown>
+        : {};
+      const fields = Array.isArray(error.fields)
+        ? error.fields.filter((field): field is { field: string; message: string } =>
+            !!field && typeof field === "object"
+            && typeof (field as Record<string, unknown>).field === "string"
+            && typeof (field as Record<string, unknown>).message === "string")
+        : undefined;
+      throw new AllowlyAPIError(res.status, {
+        code: typeof error.code === "string" ? error.code : "error",
+        message: typeof error.message === "string"
+          ? error.message
+          : res.statusText || "Unknown error",
+        fields,
+      });
     }
 
     return json as T;
@@ -282,7 +303,7 @@ class AuthorizationsResource {
     if (opts.notes) body.notes = opts.notes;
     const raw = await this.client.request<Record<string, unknown>>(
       "DELETE",
-      `/v1/authorizations/${authorizationId}`,
+      `/v1/authorizations/${encodeURIComponent(authorizationId)}`,
       Object.keys(body).length ? body : undefined,
       {
         headers: opts.idempotencyKey !== undefined
@@ -305,7 +326,7 @@ class ConfirmationsResource {
   async approve(nonce: string, req: ConfirmationApproveRequest): Promise<ConfirmationApproveResponse> {
     const raw = await this.client.request<Record<string, unknown>>(
       "POST",
-      `/v1/confirmations/${nonce}`,
+      `/v1/confirmations/${encodeURIComponent(nonce)}`,
       { approved: req.approved, ttl_seconds: req.ttlSeconds ?? 60 },
       {
         headers: req.idempotencyKey !== undefined
@@ -333,7 +354,7 @@ class EscalationsResource {
   async resolve(escalationId: string, req: EscalationResolveRequest): Promise<EscalationResolveResponse> {
     const raw = await this.client.request<Record<string, unknown>>(
       "POST",
-      `/v1/escalations/${escalationId}/resolve`,
+      `/v1/escalations/${encodeURIComponent(escalationId)}/resolve`,
       {
         resolution: req.resolution,
         resolved_by: req.resolvedBy,
@@ -378,7 +399,7 @@ class ReceiptsResource {
   private async getWithSignal(receiptId: string, signal?: AbortSignal): Promise<ReceiptEnvelope> {
     const raw = await this.client.request<Record<string, unknown>>(
       "GET",
-      `/v1/receipts/${receiptId}`,
+      `/v1/receipts/${encodeURIComponent(receiptId)}`,
       undefined,
       { signal },
     );
@@ -529,55 +550,62 @@ function optionalNumber(raw: Record<string, unknown>, key: string): number | nul
   return value;
 }
 
+function requireNumber(raw: Record<string, unknown>, key: string): number {
+  const value = raw[key];
+  if (typeof value !== "number") {
+    throw new AllowlyProtocolError(`${key} must be a number`);
+  }
+  return value;
+}
+
 function parseBudgetInfo(raw: unknown): BudgetInfo | null {
-  if (!raw || typeof raw !== "object") return null;
-  const budget = raw as Record<string, unknown>;
+  if (raw == null) return null;
+  const budget = requireRecord(raw, "budget");
   return {
-    limitMicros: budget.limit_micros as number,
-    spentMicros: budget.spent_micros as number,
-    estimatedCostMicros: budget.estimated_cost_micros as number,
-    spentAfterMicros: (budget.spent_after_micros as number | undefined) ?? null,
+    limitMicros: requireNumber(budget, "limit_micros"),
+    spentMicros: requireNumber(budget, "spent_micros"),
+    estimatedCostMicros: requireNumber(budget, "estimated_cost_micros"),
+    spentAfterMicros: optionalNumber(budget, "spent_after_micros"),
   };
 }
 
-function parseBudgetSettlementResponse(raw: Record<string, unknown>): BudgetSettlementResponse {
+function parseBudgetSettlementResponse(value: unknown): BudgetSettlementResponse {
+  const raw = requireRecord(value, "budget settlement response");
   return {
-    checkReceiptId: raw.check_receipt_id as string,
-    authorizationId: raw.authorization_id as string,
-    estimatedCostMicros: raw.estimated_cost_micros as number,
-    actualCostMicros: raw.actual_cost_micros as number,
-    deltaMicros: raw.delta_micros as number,
-    spentBeforeMicros: raw.spent_before_micros as number,
-    spentAfterMicros: raw.spent_after_micros as number,
-    receipt: parseReceiptEnvelope(raw.receipt as Record<string, unknown>),
+    checkReceiptId: requireString(raw, "check_receipt_id"),
+    authorizationId: requireString(raw, "authorization_id"),
+    estimatedCostMicros: requireNumber(raw, "estimated_cost_micros"),
+    actualCostMicros: requireNumber(raw, "actual_cost_micros"),
+    deltaMicros: requireNumber(raw, "delta_micros"),
+    spentBeforeMicros: requireNumber(raw, "spent_before_micros"),
+    spentAfterMicros: requireNumber(raw, "spent_after_micros"),
+    receipt: parseReceiptEnvelope(raw.receipt),
   };
 }
 
 function parseEscalationInfo(raw: unknown): EscalationInfo | null {
-  if (!raw || typeof raw !== "object") return null;
-  const escalation = raw as Record<string, unknown>;
+  if (raw == null) return null;
+  const escalation = requireRecord(raw, "escalation");
   return {
-    escalationId: escalation.escalation_id as string,
-    status: escalation.status as string,
-    escalationTo: (escalation.escalation_to as string | undefined) ?? null,
-    expiresAt: (escalation.expires_at as string | undefined) ?? null,
+    escalationId: requireString(escalation, "escalation_id"),
+    status: requireString(escalation, "status"),
+    escalationTo: optionalString(escalation, "escalation_to"),
+    expiresAt: optionalString(escalation, "expires_at"),
   };
 }
 
 function parsePolicyEval(raw: unknown): PolicyEvalInfo | null {
-  if (!raw || typeof raw !== "object") return null;
-  const policyEval = raw as Record<string, unknown>;
+  if (raw == null) return null;
+  const policyEval = requireRecord(raw, "policy evaluation");
   const matched = policyEval.matched_condition;
+  const condition = matched == null ? null : requireRecord(matched, "matched policy condition");
   return {
-    matchedCondition:
-      matched && typeof matched === "object"
-        ? {
-            field: (matched as Record<string, unknown>).field as string,
-            op: (matched as Record<string, unknown>).op as string,
-            value: (matched as Record<string, unknown>).value as PolicyConditionEvidence["value"],
-          }
-        : null,
-    fieldValue: policyEval.field_value as PolicyEvalInfo["fieldValue"],
+    matchedCondition: condition ? {
+      field: requireString(condition, "field"),
+      op: requireString(condition, "op"),
+      value: (condition.value ?? null) as PolicyConditionEvidence["value"],
+    } : null,
+    fieldValue: (policyEval.field_value ?? null) as PolicyEvalInfo["fieldValue"],
   };
 }
 

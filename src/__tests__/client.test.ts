@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { Allowly, AllowlyAPIError, AllowlyProtocolError } from "../index.js";
+import {
+  Allowly,
+  AllowlyAPIError,
+  AllowlyProtocolError,
+  AllowlyTransportError,
+} from "../index.js";
 
 const BASE = "https://api.example.com";
 const CLIENT_OPTS = { apiKey: "test-key", baseUrl: BASE };
@@ -223,6 +228,19 @@ describe("Allowly.check", () => {
       estimatedCostMicros: 25_000,
       spentAfterMicros: 125_000,
     });
+  });
+
+  it("rejects malformed budget fields", async () => {
+    const fetch = makeFetch(200, checkBody("llm.enrich", {
+      decision: "allow",
+      reason: "ok",
+      receipt: PENDING_RECEIPT,
+      budget: { spent_micros: 1, estimated_cost_micros: 1 },
+    }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.check({ authorizationId: "auth_1", actions: ["llm.enrich"] }))
+      .rejects.toThrow("limit_micros must be a number");
   });
 
   it("does not fail open on a malformed successful response", async () => {
@@ -458,6 +476,28 @@ describe("Allowly.settleBudget", () => {
 });
 
 describe("Allowly.authorizations.create", () => {
+  it("preserves string error bodies", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(400, { error: "upstream connect timeout" }),
+    });
+
+    await expect(client.authorizations.create({ userId: "u1" })).rejects.toMatchObject({
+      code: "error",
+      message: "upstream connect timeout",
+    });
+  });
+
+  it("exports its transport error", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: vi.fn().mockRejectedValue(new TypeError("offline")),
+    });
+
+    await expect(client.authorizations.create({ userId: "u1" }))
+      .rejects.toBeInstanceOf(AllowlyTransportError);
+  });
+
   it("applies the default request timeout path", async () => {
     const fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal as AbortSignal;
@@ -628,6 +668,19 @@ describe("Allowly.authorizations.revoke", () => {
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.superseded_by).toBe("auth_456");
+  });
+
+  it("percent-encodes reserved chars in the id so it cannot redirect the request", async () => {
+    const fetch = makeFetch(200, {
+      authorization_id: "x", revoked_at: "t", receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await client.authorizations.revoke("../policies/research_agent");
+
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe(`${BASE}/v1/authorizations/..%2Fpolicies%2Fresearch_agent`);
+    expect(url).not.toContain("/v1/policies/");
   });
 });
 
