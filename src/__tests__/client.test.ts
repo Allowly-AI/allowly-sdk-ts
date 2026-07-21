@@ -751,7 +751,7 @@ describe("Allowly.receipts.get", () => {
   });
 
   it("returns signed envelope", async () => {
-    const signedReceipt = { version: "1.1", receipt_id: "rcp_abc", decision: "allow", alg: "Ed25519", key_id: "k", signature: "sig" };
+    const signedReceipt = { version: "2.0.0", receipt_id: "rcp_abc", decision: "allow", alg: "Ed25519", key_id: "k", signature: "sig" };
     const fetch = makeFetch(200, { status: "signed", receipt: signedReceipt });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const r = await client.receipts.get("rcp_abc");
@@ -767,7 +767,7 @@ describe("Allowly.receipts.get", () => {
 
 describe("Allowly.receipts.fetchSigned", () => {
   it("polls until signed and returns receipt dict", async () => {
-    const signedReceipt = { version: "1.1", receipt_id: "rcp_abc" };
+    const signedReceipt = { version: "2.0.0", receipt_id: "rcp_abc" };
     let call = 0;
     const fetch = vi.fn().mockImplementation(async () => {
       call++;
