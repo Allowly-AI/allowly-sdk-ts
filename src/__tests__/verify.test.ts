@@ -37,8 +37,9 @@ function signedPolicyEvalReceipt() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" });
   const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
+  const keyId = "test-key/v1";
   const payload = {
-    version: "1.0",
+    version: "1.1",
     receipt_id: "rcp_policy_eval",
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
@@ -54,6 +55,8 @@ function signedPolicyEvalReceipt() {
     },
     authorization_id: "auth_conditional",
     engine_version: "2026-06-01.2",
+    alg: "Ed25519",
+    key_id: keyId,
     policy_eval: {
       matched_condition: {
         field: "checks_failed",
@@ -69,7 +72,7 @@ function signedPolicyEvalReceipt() {
       workspace_id: "ws_1",
       keys: [
         {
-          key_id: "test-key/v1",
+          key_id: keyId,
           alg: "Ed25519",
           public_key: b64url(publicKeyRaw),
           active_from: "2026-01-01T00:00:00Z",
@@ -79,11 +82,7 @@ function signedPolicyEvalReceipt() {
     },
     receipt: {
       ...payload,
-      signature: {
-        alg: "Ed25519",
-        key_id: "test-key/v1",
-        value: b64url(signature),
-      },
+      signature: b64url(signature),
     },
   };
 }
@@ -177,7 +176,7 @@ describe("loadKeysFromJson", () => {
 });
 
 describe("verifyReceipt", () => {
-  it("accepts draft.6 policy_eval with an in-condition array value", async () => {
+  it("accepts a v1.1 receipt whose algorithm and key id are signed", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
 
