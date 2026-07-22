@@ -16,7 +16,7 @@ const VALID_DOC = {
       key_id: "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
       alg: "Ed25519",
       public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      active_from: "2026-01-01T00:00:00Z",
+      active_from: "2026-01-01T00:00:00.000Z",
       active_until: null,
     },
   ],
@@ -75,7 +75,7 @@ function signedPolicyEvalReceipt() {
           key_id: keyId,
           alg: "Ed25519",
           public_key: b64url(publicKeyRaw),
-          active_from: "2026-01-01T00:00:00Z",
+          active_from: "2026-01-01T00:00:00.000Z",
           active_until: null,
         },
       ],
@@ -232,7 +232,7 @@ describe("verifyReceipt", () => {
     ).rejects.toThrow("integer exceeds the safe range");
   });
 
-  it("rejects timestamps without an explicit timezone", async () => {
+  it("rejects timestamps without UTC millisecond precision", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
     const badKeys = {
@@ -240,7 +240,7 @@ describe("verifyReceipt", () => {
       keys: [{ ...keysDoc.keys[0], active_from: "2026-01-01T00:00:00" }],
     };
 
-    expect(() => loadKeysFromJson(badKeys)).toThrow("not an RFC 3339 timestamp with timezone");
+    expect(() => loadKeysFromJson(badKeys)).toThrow("UTC millisecond precision");
 
     const badReceipt = { ...receipt, issued_at: "2026-06-09T17:04:39.114" };
     await expect(
@@ -248,7 +248,7 @@ describe("verifyReceipt", () => {
         expectedWorkspaceId: "ws_1",
         now: new Date("2026-06-09T17:05:00Z"),
       }),
-    ).rejects.toThrow("not an RFC 3339 timestamp with timezone");
+    ).rejects.toThrow("UTC millisecond precision");
   });
 
   it("rejects receipts from another workspace", async () => {
