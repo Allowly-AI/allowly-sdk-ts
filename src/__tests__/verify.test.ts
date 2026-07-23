@@ -39,7 +39,7 @@ function signedPolicyEvalReceipt() {
   const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
   const keyId = "test-key/v1";
   const payload = {
-    schema_version: "2.1.0",
+    schema_version: "3",
     receipt_id: "rcp_policy_eval",
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
@@ -176,7 +176,7 @@ describe("loadKeysFromJson", () => {
 });
 
 describe("verifyReceipt", () => {
-  it("accepts a 2.1.0 receipt whose algorithm and key id are signed", async () => {
+  it("accepts a wire-3 receipt whose algorithm and key id are signed", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
 
