@@ -105,10 +105,15 @@ export interface ActionEntry {
   constraints?: Record<string, unknown>;
 }
 
+/**
+ * Canonical flow: pass `policyId` referencing a reusable agent policy.
+ * Inline flow (`agentId` + `actions`, no `policyId`) is for prototyping and
+ * ad-hoc per-user grants. Exactly one of the two shapes must be used.
+ */
 export interface AuthorizationCreateRequest {
   userId: string;
-  agentId?: string;
   policyId?: string;
+  agentId?: string;
   actions?: ActionEntry[] | string[];
   requiresConfirmFor?: string[];
   requiresEscalationFor?: string[];
