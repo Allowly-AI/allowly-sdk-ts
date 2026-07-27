@@ -15,16 +15,16 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean",
+    "build": "tsup src/index.ts --format esm --clean && tsc --emitDeclarationOnly",
     "prepack": "npm run build && node --input-type=module -e \"const sdk = await import('@allowly/sdk'); if (typeof sdk.Allowly !== 'function') process.exit(1)\"",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^20.19.40",
-    "tsup": "^8.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^1.6.0"
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20"
