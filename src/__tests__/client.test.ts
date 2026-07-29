@@ -193,7 +193,7 @@ describe("Allowly.check", () => {
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     await client.check({ authorizationId: "auth_1", actions: ["x"] });
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer test-key" });
+    expect(init).toMatchObject({ headers: { Authorization: "Bearer test-key" }, redirect: "manual" });
   });
 
   it("sends idempotency key when provided", async () => {
@@ -599,6 +599,23 @@ describe("Allowly.check", () => {
 
     await expect(client.check({ authorizationId: "auth_1", actions: ["public.web.search"] }))
       .rejects.toMatchObject({ status });
+  });
+
+  it("rejects a followed redirect even when the final HTTP 200 is valid", async () => {
+    const response = new Response(JSON.stringify(checkBody("public.web.search", {
+      decision: "allow",
+      reason: "authorization_granted_action_active",
+      receipt: PENDING_RECEIPT,
+    })), { status: 200, headers: { "Content-Type": "application/json" } });
+    Object.defineProperty(response, "redirected", { value: true });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: vi.fn().mockResolvedValue(response),
+      fallbackByAction: { "public.web.search": "fail_open" },
+    });
+
+    await expect(client.check({ authorizationId: "auth_1", actions: ["public.web.search"] }))
+      .rejects.toBeInstanceOf(AllowlyProtocolError);
   });
 
   it("does not cache fallback results", async () => {

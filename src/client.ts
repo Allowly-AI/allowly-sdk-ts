@@ -105,6 +105,7 @@ export class Allowly {
           ...opts.headers,
         },
         body: serializedBody,
+        redirect: "manual",
         signal: opts.signal ?? AbortSignal.timeout(this.requestTimeoutMs),
       });
     } catch (err) {
@@ -112,6 +113,7 @@ export class Allowly {
       throw new AllowlyTransportError(err);
     }
 
+    if (res.redirected) throw new AllowlyProtocolError("redirected responses are not allowed");
     if (res.ok && opts.expectedStatus !== undefined && res.status !== opts.expectedStatus) {
       throw new AllowlyProtocolError(
         `unexpected successful HTTP status: got ${res.status}, want ${opts.expectedStatus}`,
