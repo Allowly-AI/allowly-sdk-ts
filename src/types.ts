@@ -98,6 +98,9 @@ export interface CheckResponse {
   authorizationExpiresAt: string | null;
   engineVersion: string;
   results: Record<string, ActionCheckResult>;
+  /** X-Allowly-Billing-Warning response header, when the workspace is close
+   * to a quota/payment boundary. Surface it to operators. */
+  billingWarning?: string;
 }
 
 export interface ActionEntry {
@@ -105,26 +108,38 @@ export interface ActionEntry {
   constraints?: Record<string, unknown>;
 }
 
-/**
- * Canonical flow: pass `policyId` referencing a reusable agent policy.
- * Inline flow (`agentId` + `actions`, no `policyId`) is for prototyping and
- * ad-hoc per-user grants. Exactly one of the two shapes must be used.
- */
-export interface AuthorizationCreateRequest {
+interface AuthorizationCreateBase {
   userId: string;
-  policyId?: string;
-  agentId?: string;
-  actions?: ActionEntry[] | string[];
   requiresConfirmFor?: string[];
   requiresEscalationFor?: string[];
   requiresDenyFor?: string[];
   escalationTargets?: Record<string, string>;
   budgetLimitMicros?: number;
-  expiresAt?: Date | string;
   replaces?: string;
   metadata?: Record<string, unknown>;
   idempotencyKey?: string;
 }
+
+/**
+ * Canonical flow: pass `policyId` referencing a reusable agent policy
+ * (`expiresAt` optional — the policy's default expiry applies). Inline flow
+ * (`agentId` + `actions`, no `policyId`) is for prototyping and ad-hoc
+ * per-user grants and requires an explicit `expiresAt`. Exactly one of the
+ * two shapes must be used; the runtime rejects mixed shapes with 422.
+ */
+export type AuthorizationCreateRequest =
+  | (AuthorizationCreateBase & {
+      policyId: string;
+      agentId?: never;
+      actions?: never;
+      expiresAt?: Date | string;
+    })
+  | (AuthorizationCreateBase & {
+      policyId?: never;
+      agentId: string;
+      actions: ActionEntry[] | string[];
+      expiresAt: Date | string;
+    });
 
 export interface AuthorizationCreateResponse {
   authorizationId: string;
@@ -132,6 +147,7 @@ export interface AuthorizationCreateResponse {
   createdAt: string;
   expiresAt: string;
   receipt: ReceiptEnvelopePending;
+  requiresConfirmFor: string[];
   requiresEscalationFor: string[];
   requiresDenyFor: string[];
   escalationTargets: Record<string, string>;
@@ -139,6 +155,8 @@ export interface AuthorizationCreateResponse {
   budgetSpentMicros: number | null;
   replacedAuthorizationId: string | null;
   revocationReceipt: ReceiptEnvelopePending | null;
+  /** X-Allowly-Billing-Warning response header, when present. */
+  billingWarning?: string;
 }
 
 export interface AuthorizationRevokeResponse {

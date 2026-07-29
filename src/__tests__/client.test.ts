@@ -16,10 +16,11 @@ const PENDING_RECEIPT = {
   url: `${BASE}/v1/receipts/rcp_abc`,
 };
 
-function makeFetch(status: number, body: unknown) {
+function makeFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(headers),
     json: async () => body,
   });
 }
@@ -114,7 +115,7 @@ describe("Allowly.check", () => {
   it("parses policy_eval evidence on conditional decisions", async () => {
     const fetch = makeFetch(200, checkBody("hiring.publish_feedback", {
       decision: "confirm",
-      reason: "condition_requires_user_confirmation",
+      reason: "confirm_condition_matched",
       confirm_nonce: "cnf_policy",
       confirm_expires_at: "2026-04-20T00:15:00Z",
       confirm_prompt_hint: "hiring.publish_feedback",
@@ -373,11 +374,38 @@ describe("Allowly.check", () => {
     expect(action.receipt).toBeNull();
   });
 
+  it("exposes Retry-After on API errors", async () => {
+    const fetch = makeFetch(
+      429,
+      { error: { code: "quota_exceeded", message: "Quota exceeded" } },
+      { "Retry-After": "17" },
+    );
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    await expect(client.check({ authorizationId: "auth_1", actions: ["email.send"] }))
+      .rejects.toMatchObject({ code: "quota_exceeded", retryAfterSeconds: 17 });
+  });
+
+  it("exposes the billing-warning header on successful checks", async () => {
+    const fetch = makeFetch(
+      200,
+      checkBody("email.send", {
+        decision: "allow",
+        reason: "authorization_granted_action_active",
+        receipt: PENDING_RECEIPT,
+      }),
+      { "X-Allowly-Billing-Warning": "quota_90_percent" },
+    );
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.check({ authorizationId: "auth_1", actions: ["email.send"] });
+    expect(res.billingWarning).toBe("quota_90_percent");
+  });
+
   it("returns fallback on non-JSON 5xx", async () => {
     const fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 502,
       statusText: "Bad Gateway",
+      headers: new Headers(),
       json: async () => { throw new SyntaxError("Unexpected token <"); },
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -482,7 +510,7 @@ describe("Allowly.authorizations.create", () => {
       fetch: makeFetch(400, { error: "upstream connect timeout" }),
     });
 
-    await expect(client.authorizations.create({ userId: "u1" })).rejects.toMatchObject({
+    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" })).rejects.toMatchObject({
       code: "error",
       message: "upstream connect timeout",
     });
@@ -494,7 +522,7 @@ describe("Allowly.authorizations.create", () => {
       fetch: vi.fn().mockRejectedValue(new TypeError("offline")),
     });
 
-    await expect(client.authorizations.create({ userId: "u1" }))
+    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
       .rejects.toBeInstanceOf(AllowlyTransportError);
   });
 
@@ -504,7 +532,7 @@ describe("Allowly.authorizations.create", () => {
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch, requestTimeoutMs: 1 });
-    await expect(client.authorizations.create({ userId: "u1" }))
+    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
       .rejects.toMatchObject({ name: "TimeoutError" });
   });
 
@@ -513,17 +541,40 @@ describe("Allowly.authorizations.create", () => {
       authorization_id: "auth_new",
       created_at: "2026-04-20T00:00:00Z",
       expires_at: "2026-12-31T00:00:00Z",
+      requires_confirm_for: ["email.send"],
       receipt: PENDING_RECEIPT,
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.authorizations.create({
       userId: "u1", agentId: "a1",
-      actions: [{ name: "email.read" }],
+      actions: [{ name: "email.read" }, { name: "email.send" }],
+      requiresConfirmFor: ["email.send"],
       expiresAt: "2026-12-31T00:00:00Z",
     });
     expect(res.authorizationId).toBe("auth_new");
     expect(res.receipt.status).toBe("pending");
     expect(res.receipt.receiptId).toBe("rcp_abc");
+    expect(res.requiresConfirmFor).toEqual(["email.send"]);
+  });
+
+  it("exposes the billing-warning header on create", async () => {
+    const fetch = makeFetch(
+      201,
+      {
+        authorization_id: "auth_new",
+        created_at: "2026-04-20T00:00:00Z",
+        expires_at: "2026-12-31T00:00:00Z",
+        receipt: PENDING_RECEIPT,
+      },
+      { "X-Allowly-Billing-Warning": "payment_past_due" },
+    );
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const res = await client.authorizations.create({
+      userId: "u1", agentId: "a1",
+      actions: ["email.read"],
+      expiresAt: "2026-12-31T00:00:00Z",
+    });
+    expect(res.billingWarning).toBe("payment_past_due");
   });
 
   it("sends and parses budget fields", async () => {
@@ -540,6 +591,7 @@ describe("Allowly.authorizations.create", () => {
       userId: "u1",
       agentId: "a1",
       actions: ["llm.enrich"],
+      expiresAt: "2026-12-31T00:00:00Z",
       budgetLimitMicros: 50_000_000,
     });
 
@@ -571,6 +623,7 @@ describe("Allowly.authorizations.create", () => {
       requiresEscalationFor: ["candidate.delete"],
       requiresDenyFor: ["email.send"],
       escalationTargets: { "candidate.delete": "compliance" },
+      expiresAt: "2026-12-31T00:00:00Z",
       idempotencyKey: "create-1",
     });
 
@@ -600,6 +653,7 @@ describe("Allowly.authorizations.create", () => {
       userId: "u1",
       agentId: "a1",
       actions: ["email.read"],
+      expiresAt: "2026-12-31T00:00:00Z",
       replaces: "auth_prev",
     });
 
@@ -634,6 +688,7 @@ describe("Allowly.authorizations.create", () => {
       userId: "u1",
       agentId: "a1",
       actions: ["email.read"],
+      expiresAt: "2026-12-31T00:00:00Z",
     })).rejects.toMatchObject({ status: 503, code: "unavailable" });
   });
 });
@@ -774,7 +829,7 @@ describe("Allowly.receipts.fetchSigned", () => {
       const body = call < 2
         ? PENDING_RECEIPT
         : { status: "signed", receipt: signedReceipt };
-      return { ok: true, status: 200, json: async () => body };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => body };
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const result = await client.receipts.fetchSigned("rcp_abc", { pollInterval: 0.001, timeout: 5 });
@@ -788,6 +843,38 @@ describe("Allowly.receipts.fetchSigned", () => {
     await expect(
       client.receipts.fetchSigned("rcp_abc", { pollInterval: 0.001, timeout: 0.005 })
     ).rejects.toThrow("not signed after");
+  });
+
+  it("default timeout covers one >60s signer tick; explicit shorter timeout still fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc" };
+      const start = Date.now();
+      const fetch = vi.fn().mockImplementation(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () =>
+          Date.now() - start >= 61_000
+            ? { status: "signed", receipt: signedReceipt }
+            : PENDING_RECEIPT,
+      }));
+      const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+      const resolved = client.receipts.fetchSigned("rcp_abc");
+      await vi.advanceTimersByTimeAsync(62_000);
+      await expect(resolved).resolves.toEqual(signedReceipt);
+
+      const neverSigned = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, PENDING_RECEIPT) });
+      const failing = neverSigned.receipts.fetchSigned("rcp_abc", { timeout: 30 }).then(
+        () => { throw new Error("should have timed out"); },
+        (err) => err,
+      );
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(((await failing) as Error).message).toContain("not signed after 30s");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects non-positive polling options", async () => {

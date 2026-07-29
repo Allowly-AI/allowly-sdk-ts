@@ -44,7 +44,7 @@ function signedPolicyEvalReceipt() {
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
     decision: "confirm",
-    reason: "condition_requires_user_confirmation",
+    reason: "confirm_condition_matched",
     user_id: "cand_55ab2",
     agent_id: "scout_referrals",
     action: "hiring.publish_feedback",

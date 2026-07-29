@@ -83,6 +83,17 @@ export class Allowly {
     body?: unknown,
     opts: { signal?: AbortSignal; headers?: Record<string, string> } = {}
   ): Promise<T> {
+    const { data } = await this.requestWithHeaders<T>(method, path, body, opts);
+    return data;
+  }
+
+  /** @internal */
+  async requestWithHeaders<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    opts: { signal?: AbortSignal; headers?: Record<string, string> } = {}
+  ): Promise<{ data: T; headers: Headers }> {
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let res: Response;
     try {
@@ -101,7 +112,7 @@ export class Allowly {
       throw new AllowlyTransportError(err);
     }
 
-    if (res.status === 204) return undefined as T;
+    if (res.status === 204) return { data: undefined as T, headers: res.headers };
 
     let json: unknown = null;
     try {
@@ -111,11 +122,12 @@ export class Allowly {
     }
 
     if (!res.ok) {
+      const retryAfterSeconds = parseRetryAfter(res.headers.get("Retry-After"));
       const rawError = json && typeof json === "object"
         ? (json as Record<string, unknown>).error
         : undefined;
       if (typeof rawError === "string") {
-        throw new AllowlyAPIError(res.status, { code: "error", message: rawError });
+        throw new AllowlyAPIError(res.status, { code: "error", message: rawError }, retryAfterSeconds);
       }
       const error = rawError && typeof rawError === "object"
         ? rawError as Record<string, unknown>
@@ -132,10 +144,10 @@ export class Allowly {
           ? error.message
           : res.statusText || "Unknown error",
         fields,
-      });
+      }, retryAfterSeconds);
     }
 
-    return json as T;
+    return { data: json as T, headers: res.headers };
   }
 
   async check(req: {
@@ -161,11 +173,14 @@ export class Allowly {
       context: req.context ?? {},
     };
     try {
-      const raw = await this.request<Record<string, unknown>>("POST", path, body, {
+      const { data: raw, headers } = await this.requestWithHeaders<Record<string, unknown>>("POST", path, body, {
         signal: controller.signal,
         headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
       });
-      return parseCheckResponse(raw);
+      const response = parseCheckResponse(raw);
+      const billingWarning = headers.get("X-Allowly-Billing-Warning");
+      if (billingWarning !== null) response.billingWarning = billingWarning;
+      return response;
     } catch (err) {
       if (isAbortError(err)) {
         return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
@@ -252,7 +267,7 @@ class AuthorizationsResource {
         ? { name: s, constraints: {} }
         : { name: s.name, constraints: s.constraints ?? {} }
     );
-    const raw = await this.client.request<Record<string, unknown>>(
+    const { data: raw, headers } = await this.client.requestWithHeaders<Record<string, unknown>>(
       "POST",
       "/v1/authorizations",
       {
@@ -275,12 +290,15 @@ class AuthorizationsResource {
           : undefined,
       },
     );
+    const billingWarning = headers.get("X-Allowly-Billing-Warning");
     return {
+      ...(billingWarning !== null ? { billingWarning } : {}),
       authorizationId: requireString(raw, "authorization_id"),
       policyId: optionalString(raw, "policy_id"),
       createdAt: requireString(raw, "created_at"),
       expiresAt: requireString(raw, "expires_at"),
       receipt: parsePendingEnvelope(raw.receipt),
+      requiresConfirmFor: (raw.requires_confirm_for as string[] | undefined) ?? [],
       requiresEscalationFor: (raw.requires_escalation_for as string[] | undefined) ?? [],
       requiresDenyFor: (raw.requires_deny_for as string[] | undefined) ?? [],
       escalationTargets: (raw.escalation_targets as Record<string, string> | undefined) ?? {},
@@ -411,7 +429,10 @@ class ReceiptsResource {
     opts: { pollInterval?: number; timeout?: number } = {}
   ): Promise<Record<string, unknown>> {
     const pollInterval = (opts.pollInterval ?? 1) * 1000;
-    const timeoutSeconds = opts.timeout ?? 30;
+    // Default timeout covers the signer's once-per-minute batch tick plus
+    // scheduling/cold-start allowance; valid service behavior can take just
+    // over a minute.
+    const timeoutSeconds = opts.timeout ?? 120;
     if (pollInterval <= 0) throw new Error("pollInterval must be positive");
     if (timeoutSeconds <= 0) throw new Error("timeout must be positive");
 
@@ -628,6 +649,14 @@ function validateBaseUrl(baseUrl: string, allowInsecure: boolean): string {
     throw new Error("baseUrl must use HTTPS");
   }
   return normalized;
+}
+
+function parseRetryAfter(value: string | null): number | undefined {
+  // Allowly only emits integer-seconds Retry-After; tolerate floats, ignore
+  // HTTP-date and garbage rather than throwing inside error handling.
+  if (value === null) return undefined;
+  const seconds = Number(value.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
 function isAbortError(err: unknown): boolean {
