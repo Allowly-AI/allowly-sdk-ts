@@ -25,6 +25,16 @@ function makeFetch(status: number, body: unknown, headers: Record<string, string
   });
 }
 
+function makeNonJsonFetch(status: number, statusText = "") {
+  return vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    statusText,
+    headers: new Headers(),
+    json: async () => { throw new SyntaxError("Unexpected token <"); },
+  });
+}
+
 function checkBody(action: string, result: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   return {
     authorization_id: "auth_1",
@@ -172,10 +182,10 @@ describe("Allowly.check", () => {
   });
 
   it("throws AllowlyAPIError on 401", async () => {
-    const fetch = makeFetch(401, { error: { code: "unauthorized", message: "Invalid or revoked API key" } });
+    const fetch = makeFetch(401, { error: { code: "invalid_or_revoked_api_key", message: "Invalid or revoked API key" } });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     await expect(client.check({ authorizationId: "auth_1", actions: ["x"] })).rejects.toThrow(AllowlyAPIError);
-    await expect(client.check({ authorizationId: "auth_1", actions: ["x"] })).rejects.toMatchObject({ status: 401, code: "unauthorized" });
+    await expect(client.check({ authorizationId: "auth_1", actions: ["x"] })).rejects.toMatchObject({ status: 401, code: "invalid_or_revoked_api_key" });
   });
 
   it("sends correct Authorization header", async () => {
@@ -252,6 +262,93 @@ describe("Allowly.check", () => {
     });
     await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
       .rejects.toThrow(AllowlyProtocolError);
+  });
+
+  it.each([201, 202, 204, 206])(
+    "rejects unexpected successful HTTP status %i without fallback",
+    async (status) => {
+      const fetch = makeFetch(status, checkBody("payments.send", {
+        decision: "allow",
+        reason: "authorization_granted_action_active",
+        receipt: PENDING_RECEIPT,
+      }));
+      const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+
+      await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
+        .rejects.toBeInstanceOf(AllowlyProtocolError);
+    },
+  );
+
+  it("normalizes a non-JSON HTTP 200 to AllowlyProtocolError without fallback", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeNonJsonFetch(200, "OK"),
+      defaultFallback: "fail_open",
+    });
+
+    await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
+      .rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+
+  it("rejects a non-object JSON check response without fallback", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(200, []),
+      defaultFallback: "fail_open",
+    });
+
+    await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
+      .rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+
+  it.each([
+    {
+      name: "missing",
+      requested: ["email.read", "email.send"],
+      returned: {
+        "email.read": { decision: "allow", reason: "authorization_granted_action_active", receipt: PENDING_RECEIPT },
+      },
+    },
+    {
+      name: "extra",
+      requested: ["email.read"],
+      returned: {
+        "email.read": { decision: "allow", reason: "authorization_granted_action_active", receipt: PENDING_RECEIPT },
+        "email.send": { decision: "deny", reason: "action_not_in_authorization", receipt: PENDING_RECEIPT },
+      },
+    },
+    {
+      name: "swapped",
+      requested: ["email.read"],
+      returned: {
+        "email.send": { decision: "allow", reason: "authorization_granted_action_active", receipt: PENDING_RECEIPT },
+      },
+    },
+  ])("rejects $name check-result action sets without fallback", async ({ requested, returned }) => {
+    const body = {
+      ...checkBody("unused", { decision: "deny", reason: "unused", receipt: PENDING_RECEIPT }),
+      results: returned,
+    };
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(200, body),
+      defaultFallback: "fail_open",
+    });
+
+    await expect(client.check({ authorizationId: "auth_1", actions: requested }))
+      .rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+
+  it("rejects a mismatched response authorization ID without fallback", async () => {
+    const fetch = makeFetch(200, checkBody("payments.send", {
+      decision: "allow",
+      reason: "authorization_granted_action_active",
+      receipt: PENDING_RECEIPT,
+    }, { authorization_id: "auth_other" }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+
+    await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
+      .rejects.toBeInstanceOf(AllowlyProtocolError);
   });
 
   it("does not fail open on local JSON serialization errors", async () => {
@@ -342,6 +439,41 @@ describe("Allowly.check", () => {
     expect(action.receipt).toBeNull();
   });
 
+  it("ignores inherited fail_open fallback modes from Object.prototype", async () => {
+    const actionName = "__allowly_polluted_action__";
+    Object.defineProperty(Object.prototype, actionName, {
+      configurable: true,
+      value: "fail_open",
+    });
+    try {
+      const client = new Allowly({
+        ...CLIENT_OPTS,
+        fetch: vi.fn().mockRejectedValue(new TypeError("offline")),
+      });
+      const res = await client.check({ authorizationId: "auth_1", actions: [actionName] });
+
+      expect(res.results[actionName].decision).toBe("deny");
+      expect(res.results[actionName].fallbackMode).toBe("fail_closed");
+      expect(res.results[actionName].reason).toBe("fallback_closed_unreachable");
+    } finally {
+      Reflect.deleteProperty(Object.prototype, actionName);
+    }
+  });
+
+  it("uses the configured default for an unmapped toString action", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: vi.fn().mockRejectedValue(new TypeError("offline")),
+      defaultFallback: "fail_open",
+    });
+
+    const res = await client.check({ authorizationId: "auth_1", actions: ["toString"] });
+
+    expect(res.results["toString"].decision).toBe("allow");
+    expect(res.results["toString"].fallbackMode).toBe("fail_open");
+    expect(res.results["toString"].reason).toBe("fallback_open_unreachable");
+  });
+
   it("returns fail_open fallback on connection error", async () => {
     const fetch = vi.fn().mockRejectedValue(new TypeError("offline"));
     const client = new Allowly({
@@ -374,6 +506,25 @@ describe("Allowly.check", () => {
     expect(action.receipt).toBeNull();
   });
 
+  it.each([
+    ["JSON", false],
+    ["non-JSON", true],
+  ])("returns the configured timeout fallback on %s HTTP 408", async (_kind, nonJson) => {
+    const fetch = nonJson
+      ? makeNonJsonFetch(408, "Request Timeout")
+      : makeFetch(408, { error: "Request timed out" });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByAction: { "public.web.search": "fail_open" },
+    });
+
+    const res = await client.check({ authorizationId: "auth_1", actions: ["public.web.search"] });
+
+    expect(res.results["public.web.search"].decision).toBe("allow");
+    expect(res.results["public.web.search"].reason).toBe("fallback_open_timeout");
+  });
+
   it("exposes Retry-After on API errors", async () => {
     const fetch = makeFetch(
       429,
@@ -401,13 +552,7 @@ describe("Allowly.check", () => {
   });
 
   it("returns fallback on non-JSON 5xx", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 502,
-      statusText: "Bad Gateway",
-      headers: new Headers(),
-      json: async () => { throw new SyntaxError("Unexpected token <"); },
-    });
+    const fetch = makeNonJsonFetch(502, "Bad Gateway");
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
     const res = await client.check({ authorizationId: "auth_1", actions: ["email.send"] });
@@ -437,8 +582,15 @@ describe("Allowly.check", () => {
     expect(res.results["email.send"].reason).toBe("fallback_closed_unreachable");
   });
 
-  it("does not fallback on 429", async () => {
-    const fetch = makeFetch(429, { error: { code: "quota_exceeded", message: "quota exceeded" } });
+  it.each([
+    ["JSON 429", 429, false],
+    ["non-JSON 429", 429, true],
+    ["non-JSON 403", 403, true],
+    ["redirect 302", 302, true],
+  ])("does not fallback on %s", async (_kind, status, nonJson) => {
+    const fetch = nonJson
+      ? makeNonJsonFetch(status)
+      : makeFetch(status, { error: { code: "quota_exceeded", message: "Quota exceeded" } });
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch,
@@ -446,7 +598,7 @@ describe("Allowly.check", () => {
     });
 
     await expect(client.check({ authorizationId: "auth_1", actions: ["public.web.search"] }))
-      .rejects.toMatchObject({ status: 429, code: "quota_exceeded" });
+      .rejects.toMatchObject({ status });
   });
 
   it("does not cache fallback results", async () => {

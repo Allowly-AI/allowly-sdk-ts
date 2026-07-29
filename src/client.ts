@@ -92,7 +92,7 @@ export class Allowly {
     method: string,
     path: string,
     body?: unknown,
-    opts: { signal?: AbortSignal; headers?: Record<string, string> } = {}
+    opts: { signal?: AbortSignal; headers?: Record<string, string>; expectedStatus?: number } = {}
   ): Promise<{ data: T; headers: Headers }> {
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let res: Response;
@@ -112,13 +112,18 @@ export class Allowly {
       throw new AllowlyTransportError(err);
     }
 
+    if (res.ok && opts.expectedStatus !== undefined && res.status !== opts.expectedStatus) {
+      throw new AllowlyProtocolError(
+        `unexpected successful HTTP status: got ${res.status}, want ${opts.expectedStatus}`,
+      );
+    }
     if (res.status === 204) return { data: undefined as T, headers: res.headers };
 
     let json: unknown = null;
     try {
       json = await res.json();
     } catch (err) {
-      if (res.ok) throw err;
+      if (res.ok) throw new AllowlyProtocolError("successful response was not valid JSON");
     }
 
     if (!res.ok) {
@@ -176,8 +181,9 @@ export class Allowly {
       const { data: raw, headers } = await this.requestWithHeaders<Record<string, unknown>>("POST", path, body, {
         signal: controller.signal,
         headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
+        expectedStatus: 200,
       });
-      const response = parseCheckResponse(raw);
+      const response = parseCheckResponse(raw, req.authorizationId, req.actions);
       const billingWarning = headers.get("X-Allowly-Billing-Warning");
       if (billingWarning !== null) response.billingWarning = billingWarning;
       return response;
@@ -186,6 +192,9 @@ export class Allowly {
         return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
       }
       if (err instanceof AllowlyAPIError) {
+        if (err.status === 408) {
+          return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
+        }
         if (err.status >= 500) {
           return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable");
         }
@@ -220,7 +229,9 @@ export class Allowly {
   }
 
   private fallbackModeForAction(action: string): FallbackMode {
-    return this.fallbackByAction[action] ?? this.defaultFallback;
+    return Object.prototype.hasOwnProperty.call(this.fallbackByAction, action)
+      ? this.fallbackByAction[action]
+      : this.defaultFallback;
   }
 
   private fallbackCheckResponse(
@@ -481,15 +492,33 @@ function parseReceiptEnvelope(value: unknown): ReceiptEnvelope {
   throw new AllowlyProtocolError("receipt status must be 'pending' or 'signed'");
 }
 
-function parseCheckResponse(value: unknown): CheckResponse {
+function parseCheckResponse(
+  value: unknown,
+  expectedAuthorizationId: string,
+  expectedActions: string[],
+): CheckResponse {
   // The API returns a map keyed by requested action. Preserve those keys so
   // callers can safely handle mixed allow/deny/confirm/escalate results in one check.
   const raw = requireRecord(value, "check response");
   const rawResults = requireRecord(raw.results, "check results");
+  const authorizationId = requireString(raw, "authorization_id");
+  if (authorizationId !== expectedAuthorizationId) {
+    throw new AllowlyProtocolError(
+      `authorization_id mismatch: got ${JSON.stringify(authorizationId)}, want ${JSON.stringify(expectedAuthorizationId)}`,
+    );
+  }
+  const expectedActionSet = new Set(expectedActions);
+  const returnedActions = Object.keys(rawResults);
+  if (
+    returnedActions.length !== expectedActionSet.size
+    || returnedActions.some((action) => !expectedActionSet.has(action))
+  ) {
+    throw new AllowlyProtocolError("check results must exactly match the requested actions");
+  }
   return {
     userId: optionalString(raw, "user_id"),
     agentId: optionalString(raw, "agent_id"),
-    authorizationId: requireString(raw, "authorization_id"),
+    authorizationId,
     authorizationExpiresAt: optionalString(raw, "authorization_expires_at"),
     engineVersion: requireString(raw, "engine_version"),
     results: Object.fromEntries(
