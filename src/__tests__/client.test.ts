@@ -16,10 +16,18 @@ const PENDING_RECEIPT = {
   url: `${BASE}/v1/receipts/rcp_abc`,
 };
 
+const AUTHORIZATION_RULE_FIELDS = {
+  requires_confirm_for: [] as string[],
+  requires_escalation_for: [] as string[],
+  requires_deny_for: [] as string[],
+  escalation_targets: {} as Record<string, string>,
+};
+
 function makeFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
+    redirected: false,
     headers: new Headers(headers),
     json: async () => body,
   });
@@ -30,6 +38,7 @@ function makeNonJsonFetch(status: number, statusText = "") {
     ok: status >= 200 && status < 300,
     status,
     statusText,
+    redirected: false,
     headers: new Headers(),
     json: async () => { throw new SyntaxError("Unexpected token <"); },
   });
@@ -63,6 +72,14 @@ describe("Allowly.check", () => {
     ).not.toThrow();
   });
 
+  it("rejects non-HTTP base URLs even with insecure opt-in", () => {
+    expect(() => new Allowly({
+      apiKey: "test-key",
+      baseUrl: "ftp://api.example.com",
+      dangerouslyAllowInsecureBaseUrl: true,
+    })).toThrow("HTTP or HTTPS");
+  });
+
   it("rejects non-positive request timeouts", () => {
     expect(() => new Allowly({ ...CLIENT_OPTS, requestTimeoutMs: 0 }))
       .toThrow("requestTimeoutMs must be positive");
@@ -91,6 +108,22 @@ describe("Allowly.check", () => {
       expect(res.userId).toBe("u1");
       expect(res.authorizationId).toBe("auth_1");
     }
+  });
+
+  it("never exposes network results as SDK fallbacks even when wire fields claim otherwise", async () => {
+    const fetch = makeFetch(200, checkBody("email.read", {
+      decision: "allow",
+      reason: "authorization_granted_action_active",
+      receipt: PENDING_RECEIPT,
+      is_fallback: true,
+      fallback_mode: "fail_open",
+    }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    const res = await client.check({ authorizationId: "auth_1", actions: ["email.read"] });
+
+    expect(res.results["email.read"].isFallback).toBe(false);
+    expect(res.results["email.read"].fallbackMode).toBeNull();
   });
 
   it("returns deny", async () => {
@@ -196,6 +229,22 @@ describe("Allowly.check", () => {
     expect(init).toMatchObject({ headers: { Authorization: "Bearer test-key" }, redirect: "manual" });
   });
 
+  it("sends the configured edge token on SDK endpoint calls", async () => {
+    const fetch = makeFetch(200, checkBody("x", {
+      decision: "deny",
+      reason: "authorization_not_found",
+      receipt: PENDING_RECEIPT,
+    }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, edgeToken: "local-edge-token" });
+
+    await client.check({ authorizationId: "auth_1", actions: ["x"] });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({
+      "X-Allowly-Edge-Token": "local-edge-token",
+    });
+  });
+
   it("sends idempotency key when provided", async () => {
     const fetch = makeFetch(200, checkBody("x", { decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -258,7 +307,7 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch: makeFetch(200, {}),
-      defaultFallback: "fail_open",
+      fallbackByAction: { "payments.send": "fail_open" },
     });
     await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
       .rejects.toThrow(AllowlyProtocolError);
@@ -272,7 +321,11 @@ describe("Allowly.check", () => {
         reason: "authorization_granted_action_active",
         receipt: PENDING_RECEIPT,
       }));
-      const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+      const client = new Allowly({
+        ...CLIENT_OPTS,
+        fetch,
+        fallbackByAction: { "payments.send": "fail_open" },
+      });
 
       await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
         .rejects.toBeInstanceOf(AllowlyProtocolError);
@@ -283,7 +336,7 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch: makeNonJsonFetch(200, "OK"),
-      defaultFallback: "fail_open",
+      fallbackByAction: { "payments.send": "fail_open" },
     });
 
     await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
@@ -294,7 +347,7 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch: makeFetch(200, []),
-      defaultFallback: "fail_open",
+      fallbackByAction: { "payments.send": "fail_open" },
     });
 
     await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
@@ -332,7 +385,7 @@ describe("Allowly.check", () => {
     const client = new Allowly({
       ...CLIENT_OPTS,
       fetch: makeFetch(200, body),
-      defaultFallback: "fail_open",
+      fallbackByAction: Object.fromEntries(requested.map((action) => [action, "fail_open" as const])),
     });
 
     await expect(client.check({ authorizationId: "auth_1", actions: requested }))
@@ -345,7 +398,11 @@ describe("Allowly.check", () => {
       reason: "authorization_granted_action_active",
       receipt: PENDING_RECEIPT,
     }, { authorization_id: "auth_other" }));
-    const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByAction: { "payments.send": "fail_open" },
+    });
 
     await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
       .rejects.toBeInstanceOf(AllowlyProtocolError);
@@ -353,7 +410,11 @@ describe("Allowly.check", () => {
 
   it("does not fail open on local JSON serialization errors", async () => {
     const fetch = vi.fn();
-    const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByAction: { "payments.send": "fail_open" },
+    });
     const context: Record<string, unknown> = {};
     context.self = context;
 
@@ -371,7 +432,11 @@ describe("Allowly.check", () => {
       reason: "bad response",
       receipt: PENDING_RECEIPT,
     }));
-    const client = new Allowly({ ...CLIENT_OPTS, fetch, defaultFallback: "fail_open" });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      fallbackByAction: { "payments.send": "fail_open" },
+    });
     await expect(client.check({ authorizationId: "auth_1", actions: ["payments.send"] }))
       .rejects.toThrow("unknown check decision");
   });
@@ -437,6 +502,7 @@ describe("Allowly.check", () => {
     expect(action.isFallback).toBe(true);
     expect(action.fallbackMode).toBe("fail_closed");
     expect(action.receipt).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("ignores inherited fail_open fallback modes from Object.prototype", async () => {
@@ -460,18 +526,19 @@ describe("Allowly.check", () => {
     }
   });
 
-  it("uses the configured default for an unmapped toString action", async () => {
-    const client = new Allowly({
+  it("ignores the removed global fallback option at runtime", async () => {
+    const legacyOptions = {
       ...CLIENT_OPTS,
       fetch: vi.fn().mockRejectedValue(new TypeError("offline")),
-      defaultFallback: "fail_open",
-    });
+      defaultFallback: "fail_open" as const,
+    };
+    const client = new Allowly(legacyOptions);
 
     const res = await client.check({ authorizationId: "auth_1", actions: ["toString"] });
 
-    expect(res.results["toString"].decision).toBe("allow");
-    expect(res.results["toString"].fallbackMode).toBe("fail_open");
-    expect(res.results["toString"].reason).toBe("fallback_open_unreachable");
+    expect(res.results["toString"].decision).toBe("deny");
+    expect(res.results["toString"].fallbackMode).toBe("fail_closed");
+    expect(res.results["toString"].reason).toBe("fallback_closed_unreachable");
   });
 
   it("returns fail_open fallback on connection error", async () => {
@@ -504,6 +571,7 @@ describe("Allowly.check", () => {
     expect(action.isFallback).toBe(true);
     expect(action.fallbackMode).toBe("fail_closed");
     expect(action.receipt).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -670,6 +738,7 @@ describe("Allowly.settleBudget", () => {
     });
     expect(res.receipt.status).toBe("pending");
   });
+
 });
 
 describe("Allowly.authorizations.create", () => {
@@ -705,11 +774,104 @@ describe("Allowly.authorizations.create", () => {
       .rejects.toMatchObject({ name: "TimeoutError" });
   });
 
+  it("requires exact HTTP 201", async () => {
+    const fetch = makeFetch(200, {
+      authorization_id: "auth_new",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
+      .rejects.toThrow("unexpected successful HTTP status");
+  });
+
+  it("omits inline decision overrides from policy-based requests", async () => {
+    const fetch = makeFetch(201, {
+      authorization_id: "auth_policy",
+      policy_id: "p1",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await client.authorizations.create({ userId: "u1", policyId: "p1" });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).not.toHaveProperty("requires_confirm_for");
+    expect(body).not.toHaveProperty("requires_escalation_for");
+    expect(body).not.toHaveProperty("requires_deny_for");
+    expect(body).not.toHaveProperty("escalation_targets");
+  });
+
+  it.each([
+    ["requiresConfirmFor", []],
+    ["requiresEscalationFor", []],
+    ["requiresDenyFor", []],
+    ["escalationTargets", {}],
+  ])("rejects policy create with runtime decision override %s", async (field, value) => {
+    const fetch = makeFetch(201, {});
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.authorizations.create({
+      userId: "u1",
+      policyId: "p1",
+      [field]: value,
+    } as any)).rejects.toThrow(field);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["requires_confirm_for", undefined],
+    ["requires_confirm_for", ["email.send", 1]],
+    ["requires_escalation_for", undefined],
+    ["requires_escalation_for", ["candidate.delete", null]],
+    ["requires_deny_for", undefined],
+    ["requires_deny_for", [false]],
+    ["escalation_targets", undefined],
+    ["escalation_targets", { "candidate.delete": 7 }],
+  ])("strictly requires and validates authorization response field %s (%j)", async (field, value) => {
+    const fetch = makeFetch(201, {
+      authorization_id: "auth_new",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
+      [field]: value,
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
+      .rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+
+  it.each(["receipt_id", "url"])("requires pending receipt field %s", async (field) => {
+    const receipt = { ...PENDING_RECEIPT } as Record<string, unknown>;
+    delete receipt[field];
+    const fetch = makeFetch(201, {
+      authorization_id: "auth_new",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
+      receipt,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
+      .rejects.toThrow(field);
+  });
+
   it("returns AuthorizationCreateResponse with receipt envelope", async () => {
     const fetch = makeFetch(201, {
       authorization_id: "auth_new",
       created_at: "2026-04-20T00:00:00Z",
       expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
       requires_confirm_for: ["email.send"],
       receipt: PENDING_RECEIPT,
     });
@@ -733,6 +895,7 @@ describe("Allowly.authorizations.create", () => {
         authorization_id: "auth_new",
         created_at: "2026-04-20T00:00:00Z",
         expires_at: "2026-12-31T00:00:00Z",
+        ...AUTHORIZATION_RULE_FIELDS,
         receipt: PENDING_RECEIPT,
       },
       { "X-Allowly-Billing-Warning": "payment_past_due" },
@@ -751,6 +914,7 @@ describe("Allowly.authorizations.create", () => {
       authorization_id: "auth_budget",
       created_at: "2026-04-20T00:00:00Z",
       expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
       budget_limit_micros: 50_000_000,
       budget_spent_micros: 0,
       receipt: PENDING_RECEIPT,
@@ -777,6 +941,7 @@ describe("Allowly.authorizations.create", () => {
       authorization_id: "auth_esc",
       created_at: "2026-04-20T00:00:00Z",
       expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
       requires_escalation_for: ["candidate.delete"],
       requires_deny_for: ["email.send"],
       escalation_targets: { "candidate.delete": "compliance" },
@@ -814,6 +979,7 @@ describe("Allowly.authorizations.create", () => {
       authorization_id: "auth_new",
       created_at: "2026-04-20T00:00:00Z",
       expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
       receipt: PENDING_RECEIPT,
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -834,7 +1000,8 @@ describe("Allowly.authorizations.create", () => {
   it("does not send session_id", async () => {
     const fetch = makeFetch(201, {
       authorization_id: "auth_new", created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z", receipt: PENDING_RECEIPT,
+      expires_at: "2026-12-31T00:00:00Z", ...AUTHORIZATION_RULE_FIELDS,
+      receipt: PENDING_RECEIPT,
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     await client.authorizations.create({
@@ -881,9 +1048,24 @@ describe("Allowly.authorizations.revoke", () => {
     expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "revoke-1" });
   });
 
+  it("requires revoked_confirmations", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(200, {
+        authorization_id: "auth_123",
+        revoked_at: "2026-05-01T09:00:00Z",
+        receipt: PENDING_RECEIPT,
+      }),
+    });
+
+    await expect(client.authorizations.revoke("auth_123"))
+      .rejects.toThrow("revoked_confirmations");
+  });
+
   it("sends supersededBy on revoke", async () => {
     const fetch = makeFetch(200, {
       authorization_id: "auth_123", revoked_at: "2026-05-01T09:00:00Z", receipt: PENDING_RECEIPT,
+      revoked_confirmations: [],
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
@@ -897,6 +1079,7 @@ describe("Allowly.authorizations.revoke", () => {
   it("percent-encodes reserved chars in the id so it cannot redirect the request", async () => {
     const fetch = makeFetch(200, {
       authorization_id: "x", revoked_at: "t", receipt: PENDING_RECEIPT,
+      revoked_confirmations: [],
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
@@ -923,10 +1106,25 @@ describe("Allowly.confirmations", () => {
   });
 
   it("handles denied_by_user", async () => {
-    const fetch = makeFetch(200, { decision: "denied_by_user" });
+    const fetch = makeFetch(200, {
+      decision: "denied_by_user",
+      authorization_id: null,
+      expires_at: null,
+    });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.confirmations.approve("nonce123", { approved: false });
     expect(res.decision).toBe("denied_by_user");
+  });
+
+  it.each([
+    { decision: "approved", authorization_id: "auth_xyz" },
+    { decision: "denied_by_user", authorization_id: null },
+    { decision: "denied_by_user", authorization_id: "auth_xyz", expires_at: null },
+  ])("requires decision-specific confirmation fields", async (body) => {
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, body) });
+
+    await expect(client.confirmations.approve("nonce123", { approved: true }))
+      .rejects.toThrow(AllowlyProtocolError);
   });
 });
 
@@ -1004,6 +1202,85 @@ describe("Allowly.receipts.fetchSigned", () => {
     const result = await client.receipts.fetchSigned("rcp_abc", { pollInterval: 0.001, timeout: 5 });
     expect(result).toEqual(signedReceipt);
     expect(call).toBe(2);
+  });
+
+  it("continues polling across transport, HTTP 408, and HTTP 5xx failures", async () => {
+    const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc" };
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { code: "request_timeout", message: "try again" },
+      }), { status: 408 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { code: "unavailable", message: "try again" },
+      }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "signed",
+        receipt: signedReceipt,
+      }), { status: 200 }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.receipts.fetchSigned("rcp_abc", {
+      pollInterval: 0.001,
+      timeout: 1,
+    })).resolves.toEqual(signedReceipt);
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("honors Retry-After while retrying HTTP 429", async () => {
+    vi.useFakeTimers();
+    try {
+      const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc" };
+      const fetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          error: { code: "rate_limited", message: "slow down" },
+        }), { status: 429, headers: { "Retry-After": "0.05" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          status: "signed",
+          receipt: signedReceipt,
+        }), { status: 200 }));
+      const client = new Allowly({ ...CLIENT_OPTS, fetch });
+      const outcome = client.receipts.fetchSigned("rcp_abc", {
+        pollInterval: 0.001,
+        timeout: 1,
+      }).then(
+        (value) => ({ value, error: undefined }),
+        (error: unknown) => ({ value: undefined, error }),
+      );
+
+      await vi.advanceTimersByTimeAsync(49);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(await outcome).toEqual({ value: signedReceipt, error: undefined });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails immediately on non-transient 4xx responses", async () => {
+    const fetch = makeFetch(403, {
+      error: { code: "forbidden", message: "forbidden" },
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.receipts.fetchSigned("rcp_abc", {
+      pollInterval: 0.001,
+      timeout: 1,
+    })).rejects.toMatchObject({ status: 403 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails immediately on receipt protocol errors", async () => {
+    const fetch = makeFetch(200, { status: "lost" });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.receipts.fetchSigned("rcp_abc", {
+      pollInterval: 0.001,
+      timeout: 1,
+    })).rejects.toBeInstanceOf(AllowlyProtocolError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("throws on timeout", async () => {

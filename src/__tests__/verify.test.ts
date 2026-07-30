@@ -98,6 +98,61 @@ describe("fetchKeysDoc", () => {
     );
   });
 
+  it("allows explicit insecure local development and sends the edge token", async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(VALID_DOC));
+
+    await fetchKeysDoc("ws_1", {
+      baseUrl: "http://localhost:8000",
+      dangerouslyAllowInsecureBaseUrl: true,
+      edgeToken: "local-edge-token",
+      fetch,
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8000/v1/workspaces/ws_1/keys",
+      expect.objectContaining({
+        redirect: "manual",
+        headers: { "X-Allowly-Edge-Token": "local-edge-token" },
+      }),
+    );
+  });
+
+  it("rejects non-HTTP schemes even with insecure opt-in", async () => {
+    await expect(fetchKeysDoc("ws_1", {
+      baseUrl: "ftp://api.example.com",
+      dangerouslyAllowInsecureBaseUrl: true,
+    })).rejects.toThrow("HTTP or HTTPS");
+  });
+
+  it("requests manual redirect handling", async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(VALID_DOC));
+
+    await fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com" });
+
+    expect(fetch.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+  });
+
+  it("rejects a followed redirect even when the final response is HTTP 200", async () => {
+    const response = jsonResponse(VALID_DOC);
+    Object.defineProperty(response, "redirected", { value: true });
+
+    await expect(fetchKeysDoc("ws_1", {
+      fetch: vi.fn().mockResolvedValue(response),
+      baseUrl: "https://api.example.com",
+    })).rejects.toThrow("redirected");
+  });
+
+  it.each([201, 204, 206])("requires exact HTTP 200, not successful status %i", async (status) => {
+    const response = status === 204
+      ? new Response(null, { status })
+      : new Response(JSON.stringify(VALID_DOC), { status });
+
+    await expect(fetchKeysDoc("ws_1", {
+      fetch: vi.fn().mockResolvedValue(response),
+      baseUrl: "https://api.example.com",
+    })).rejects.toThrow(`HTTP ${status}`);
+  });
+
   it("caches documents for five minutes by default", async () => {
     const fetch = vi.fn().mockResolvedValue(jsonResponse(VALID_DOC));
     const first = await fetchKeysDoc("ws_1", { fetch, baseUrl: "https://api.example.com" });

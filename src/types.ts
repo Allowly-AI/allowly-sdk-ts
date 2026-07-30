@@ -3,9 +3,9 @@ export type FallbackMode = "fail_open" | "fail_closed";
 
 export interface ReceiptEnvelopePending {
   status: "pending";
-  receiptId: string | null;
+  receiptId: string;
   readyAtEstimate: string | null;
-  url: string | null;
+  url: string;
 }
 
 export interface ReceiptEnvelopeSigned {
@@ -110,14 +110,17 @@ export interface ActionEntry {
 
 interface AuthorizationCreateBase {
   userId: string;
-  requiresConfirmFor?: string[];
-  requiresEscalationFor?: string[];
-  requiresDenyFor?: string[];
-  escalationTargets?: Record<string, string>;
   budgetLimitMicros?: number;
   replaces?: string;
   metadata?: Record<string, unknown>;
   idempotencyKey?: string;
+}
+
+interface AuthorizationCreateInlineControls {
+  requiresConfirmFor?: string[];
+  requiresEscalationFor?: string[];
+  requiresDenyFor?: string[];
+  escalationTargets?: Record<string, string>;
 }
 
 /**
@@ -134,7 +137,7 @@ export type AuthorizationCreateRequest =
       actions?: never;
       expiresAt?: Date | string;
     })
-  | (AuthorizationCreateBase & {
+  | (AuthorizationCreateBase & AuthorizationCreateInlineControls & {
       policyId?: never;
       agentId: string;
       actions: ActionEntry[] | string[];
@@ -172,11 +175,9 @@ export interface ConfirmationApproveRequest {
   idempotencyKey?: string;
 }
 
-export interface ConfirmationApproveResponse {
-  decision: "approved" | "denied_by_user";
-  authorizationId?: string;
-  expiresAt?: string;
-}
+export type ConfirmationApproveResponse =
+  | { decision: "approved"; authorizationId: string; expiresAt: string }
+  | { decision: "denied_by_user"; authorizationId: null; expiresAt: null };
 
 export interface EscalationResolveRequest {
   resolution: "approved" | "rejected";
@@ -196,10 +197,10 @@ export interface AllowlyOptions {
   apiKey: string;
   baseUrl?: string;
   dangerouslyAllowInsecureBaseUrl?: boolean;
+  edgeToken?: string;
   fetch?: typeof globalThis.fetch;
   checkTimeoutMs?: number;
   requestTimeoutMs?: number;
-  defaultFallback?: FallbackMode;
   fallbackByAction?: Record<string, FallbackMode>;
 }
 
