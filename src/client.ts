@@ -35,11 +35,11 @@ export class AllowlyTransportError extends Error {
 
 export class Allowly {
   private readonly apiKey: string;
+  private readonly edgeToken: string | undefined;
   private readonly baseUrl: string;
   private readonly _fetch: typeof globalThis.fetch;
   private readonly checkTimeoutMs: number;
   private readonly requestTimeoutMs: number;
-  private readonly defaultFallback: FallbackMode;
   private readonly fallbackByAction: Record<string, FallbackMode>;
 
   readonly authorizations: AuthorizationsResource;
@@ -49,6 +49,7 @@ export class Allowly {
 
   constructor(options: AllowlyOptions) {
     this.apiKey = options.apiKey;
+    this.edgeToken = options.edgeToken;
     this.baseUrl = validateBaseUrl(
       options.baseUrl ?? DEFAULT_BASE_URL,
       options.dangerouslyAllowInsecureBaseUrl ?? false,
@@ -62,7 +63,6 @@ export class Allowly {
     if (this.requestTimeoutMs <= 0) {
       throw new Error("requestTimeoutMs must be positive");
     }
-    this.defaultFallback = validateFallbackMode(options.defaultFallback ?? "fail_closed");
     this.fallbackByAction = Object.fromEntries(
       Object.entries(options.fallbackByAction ?? {}).map(([action, mode]) => [
         action,
@@ -81,7 +81,7 @@ export class Allowly {
     method: string,
     path: string,
     body?: unknown,
-    opts: { signal?: AbortSignal; headers?: Record<string, string> } = {}
+    opts: { signal?: AbortSignal; headers?: Record<string, string>; expectedStatus?: number } = {}
   ): Promise<T> {
     const { data } = await this.requestWithHeaders<T>(method, path, body, opts);
     return data;
@@ -92,7 +92,7 @@ export class Allowly {
     method: string,
     path: string,
     body?: unknown,
-    opts: { signal?: AbortSignal; headers?: Record<string, string> } = {}
+    opts: { signal?: AbortSignal; headers?: Record<string, string>; expectedStatus?: number } = {}
   ): Promise<{ data: T; headers: Headers }> {
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let res: Response;
@@ -101,10 +101,14 @@ export class Allowly {
         method,
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
+          ...(this.edgeToken !== undefined
+            ? { "X-Allowly-Edge-Token": this.edgeToken }
+            : {}),
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
           ...opts.headers,
         },
         body: serializedBody,
+        redirect: "manual",
         signal: opts.signal ?? AbortSignal.timeout(this.requestTimeoutMs),
       });
     } catch (err) {
@@ -112,13 +116,20 @@ export class Allowly {
       throw new AllowlyTransportError(err);
     }
 
+    if (res.redirected) throw new AllowlyProtocolError("redirected responses are not allowed");
+    const expectedStatus = opts.expectedStatus ?? 200;
+    if (res.ok && res.status !== expectedStatus) {
+      throw new AllowlyProtocolError(
+        `unexpected successful HTTP status: got ${res.status}, want ${expectedStatus}`,
+      );
+    }
     if (res.status === 204) return { data: undefined as T, headers: res.headers };
 
     let json: unknown = null;
     try {
       json = await res.json();
     } catch (err) {
-      if (res.ok) throw err;
+      if (res.ok) throw new AllowlyProtocolError("successful response was not valid JSON");
     }
 
     if (!res.ok) {
@@ -177,7 +188,7 @@ export class Allowly {
         signal: controller.signal,
         headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
       });
-      const response = parseCheckResponse(raw);
+      const response = parseCheckResponse(raw, req.authorizationId, req.actions);
       const billingWarning = headers.get("X-Allowly-Billing-Warning");
       if (billingWarning !== null) response.billingWarning = billingWarning;
       return response;
@@ -186,6 +197,9 @@ export class Allowly {
         return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
       }
       if (err instanceof AllowlyAPIError) {
+        if (err.status === 408) {
+          return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
+        }
         if (err.status >= 500) {
           return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable");
         }
@@ -220,7 +234,9 @@ export class Allowly {
   }
 
   private fallbackModeForAction(action: string): FallbackMode {
-    return this.fallbackByAction[action] ?? this.defaultFallback;
+    return Object.prototype.hasOwnProperty.call(this.fallbackByAction, action)
+      ? this.fallbackByAction[action]
+      : "fail_closed";
   }
 
   private fallbackCheckResponse(
@@ -261,12 +277,30 @@ class AuthorizationsResource {
   constructor(private readonly client: Allowly) {}
 
   async create(req: AuthorizationCreateRequest): Promise<AuthorizationCreateResponse> {
+    if (req.policyId !== undefined) {
+      const runtimeReq = req as unknown as Record<string, unknown>;
+      const override = [
+        ["requiresConfirmFor", runtimeReq.requiresConfirmFor],
+        ["requiresEscalationFor", runtimeReq.requiresEscalationFor],
+        ["requiresDenyFor", runtimeReq.requiresDenyFor],
+        ["escalationTargets", runtimeReq.escalationTargets],
+      ].find(([, value]) => value !== undefined);
+      if (override) throw new Error(`policyId cannot be combined with ${override[0]}`);
+    }
     const expiresAt = req.expiresAt instanceof Date ? req.expiresAt.toISOString() : req.expiresAt;
     const actions = req.actions?.map((s) =>
       typeof s === "string"
         ? { name: s, constraints: {} }
         : { name: s.name, constraints: s.constraints ?? {} }
     );
+    const inlineDecisionOverrides = req.policyId === undefined
+      ? {
+          requires_confirm_for: req.requiresConfirmFor ?? [],
+          requires_escalation_for: req.requiresEscalationFor ?? [],
+          requires_deny_for: req.requiresDenyFor ?? [],
+          escalation_targets: req.escalationTargets ?? {},
+        }
+      : {};
     const { data: raw, headers } = await this.client.requestWithHeaders<Record<string, unknown>>(
       "POST",
       "/v1/authorizations",
@@ -275,10 +309,7 @@ class AuthorizationsResource {
         agent_id: req.agentId,
         policy_id: req.policyId,
         actions,
-        requires_confirm_for: req.requiresConfirmFor ?? [],
-        requires_escalation_for: req.requiresEscalationFor ?? [],
-        requires_deny_for: req.requiresDenyFor ?? [],
-        escalation_targets: req.escalationTargets ?? {},
+        ...inlineDecisionOverrides,
         budget_limit_micros: req.budgetLimitMicros,
         expires_at: expiresAt,
         replaces: req.replaces,
@@ -288,6 +319,7 @@ class AuthorizationsResource {
         headers: req.idempotencyKey !== undefined
           ? { "Idempotency-Key": req.idempotencyKey }
           : undefined,
+        expectedStatus: 201,
       },
     );
     const billingWarning = headers.get("X-Allowly-Billing-Warning");
@@ -298,10 +330,10 @@ class AuthorizationsResource {
       createdAt: requireString(raw, "created_at"),
       expiresAt: requireString(raw, "expires_at"),
       receipt: parsePendingEnvelope(raw.receipt),
-      requiresConfirmFor: (raw.requires_confirm_for as string[] | undefined) ?? [],
-      requiresEscalationFor: (raw.requires_escalation_for as string[] | undefined) ?? [],
-      requiresDenyFor: (raw.requires_deny_for as string[] | undefined) ?? [],
-      escalationTargets: (raw.escalation_targets as Record<string, string> | undefined) ?? {},
+      requiresConfirmFor: requireStringArray(raw, "requires_confirm_for"),
+      requiresEscalationFor: requireStringArray(raw, "requires_escalation_for"),
+      requiresDenyFor: requireStringArray(raw, "requires_deny_for"),
+      escalationTargets: requireStringMap(raw, "escalation_targets"),
       budgetLimitMicros: optionalNumber(raw, "budget_limit_micros"),
       budgetSpentMicros: optionalNumber(raw, "budget_spent_micros"),
       replacedAuthorizationId: optionalString(raw, "replaced_authorization_id"),
@@ -333,7 +365,7 @@ class AuthorizationsResource {
       authorizationId: requireString(raw, "authorization_id"),
       revokedAt: requireString(raw, "revoked_at"),
       receipt: parsePendingEnvelope(raw.receipt),
-      revokedConfirmations: (raw.revoked_confirmations as string[] | undefined) ?? [],
+      revokedConfirmations: requireStringArray(raw, "revoked_confirmations"),
     };
   }
 }
@@ -356,12 +388,17 @@ class ConfirmationsResource {
     if (decision !== "approved" && decision !== "denied_by_user") {
       throw new AllowlyProtocolError(`unknown confirmation decision: ${JSON.stringify(decision)}`);
     }
+    if (decision === "approved") {
+      return {
+        decision,
+        authorizationId: requireString(raw, "authorization_id"),
+        expiresAt: requireString(raw, "expires_at"),
+      };
+    }
     return {
       decision,
-      authorizationId: raw.authorization_id == null
-        ? undefined
-        : requireString(raw, "authorization_id"),
-      expiresAt: raw.expires_at == null ? undefined : requireString(raw, "expires_at"),
+      authorizationId: requireNull(raw, "authorization_id"),
+      expiresAt: requireNull(raw, "expires_at"),
     };
   }
 }
@@ -377,7 +414,7 @@ class EscalationsResource {
         resolution: req.resolution,
         resolved_by: req.resolvedBy,
         note: req.note ?? null,
-      }
+      },
     );
     const status = requireString(raw, "status");
     if (status !== "approved" && status !== "rejected") {
@@ -443,14 +480,26 @@ class ReceiptsResource {
 
     try {
       while (Date.now() < deadline) {
+        let delayMs = pollInterval;
         try {
           const envelope = await this.getWithSignal(receiptId, controller.signal);
-          if (envelope.status === "signed") return envelope.receipt;
+          if (envelope.status === "signed" && Date.now() < deadline) return envelope.receipt;
         } catch (err) {
           if (isAbortError(err)) break;
-          throw err;
+          if (err instanceof AllowlyTransportError) {
+            // Retry transient transport failures within the same deadline.
+          } else if (
+            err instanceof AllowlyAPIError
+            && (err.status === 408 || err.status === 429 || (err.status >= 500 && err.status <= 599))
+          ) {
+            if (err.status === 429 && err.retryAfterSeconds !== undefined) {
+              delayMs = Math.max(delayMs, err.retryAfterSeconds * 1000);
+            }
+          } else {
+            throw err;
+          }
         }
-        await sleep(Math.min(pollInterval, Math.max(0, deadline - Date.now())));
+        await sleep(Math.min(delayMs, Math.max(0, deadline - Date.now())));
       }
     } finally {
       clearTimeout(timer);
@@ -466,9 +515,9 @@ function parsePendingEnvelope(value: unknown): ReceiptEnvelopePending {
   }
   return {
     status: "pending",
-    receiptId: optionalString(raw, "receipt_id"),
+    receiptId: requireString(raw, "receipt_id"),
     readyAtEstimate: optionalString(raw, "ready_at_estimate"),
-    url: optionalString(raw, "url"),
+    url: requireString(raw, "url"),
   };
 }
 
@@ -481,15 +530,33 @@ function parseReceiptEnvelope(value: unknown): ReceiptEnvelope {
   throw new AllowlyProtocolError("receipt status must be 'pending' or 'signed'");
 }
 
-function parseCheckResponse(value: unknown): CheckResponse {
+function parseCheckResponse(
+  value: unknown,
+  expectedAuthorizationId: string,
+  expectedActions: string[],
+): CheckResponse {
   // The API returns a map keyed by requested action. Preserve those keys so
   // callers can safely handle mixed allow/deny/confirm/escalate results in one check.
   const raw = requireRecord(value, "check response");
   const rawResults = requireRecord(raw.results, "check results");
+  const authorizationId = requireString(raw, "authorization_id");
+  if (authorizationId !== expectedAuthorizationId) {
+    throw new AllowlyProtocolError(
+      `authorization_id mismatch: got ${JSON.stringify(authorizationId)}, want ${JSON.stringify(expectedAuthorizationId)}`,
+    );
+  }
+  const expectedActionSet = new Set(expectedActions);
+  const returnedActions = Object.keys(rawResults);
+  if (
+    returnedActions.length !== expectedActionSet.size
+    || returnedActions.some((action) => !expectedActionSet.has(action))
+  ) {
+    throw new AllowlyProtocolError("check results must exactly match the requested actions");
+  }
   return {
     userId: optionalString(raw, "user_id"),
     agentId: optionalString(raw, "agent_id"),
-    authorizationId: requireString(raw, "authorization_id"),
+    authorizationId,
     authorizationExpiresAt: optionalString(raw, "authorization_expires_at"),
     engineVersion: requireString(raw, "engine_version"),
     results: Object.fromEntries(
@@ -499,8 +566,8 @@ function parseCheckResponse(value: unknown): CheckResponse {
         const base = {
           reason: requireString(result, "reason"),
           receipt: parseReceiptEnvelope(result.receipt),
-          isFallback: Boolean(result.is_fallback ?? false),
-          fallbackMode: (result.fallback_mode as FallbackMode | null | undefined) ?? null,
+          isFallback: false,
+          fallbackMode: null,
           budget: parseBudgetInfo(result.budget),
           escalation: parseEscalationInfo(result.escalation),
           policyEval: parsePolicyEval(result.policy_eval),
@@ -553,6 +620,22 @@ function requireString(raw: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function requireStringArray(raw: Record<string, unknown>, key: string): string[] {
+  const value = raw[key];
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new AllowlyProtocolError(`${key} must be an array of strings`);
+  }
+  return value as string[];
+}
+
+function requireStringMap(raw: Record<string, unknown>, key: string): Record<string, string> {
+  const value = requireRecord(raw[key], key);
+  if (!Object.values(value).every((mapValue) => typeof mapValue === "string")) {
+    throw new AllowlyProtocolError(`${key} values must be strings`);
+  }
+  return value as Record<string, string>;
+}
+
 function optionalString(raw: Record<string, unknown>, key: string): string | null {
   const value = raw[key];
   if (value == null) return null;
@@ -560,6 +643,13 @@ function optionalString(raw: Record<string, unknown>, key: string): string | nul
     throw new AllowlyProtocolError(`${key} must be a string or null`);
   }
   return value;
+}
+
+function requireNull(raw: Record<string, unknown>, key: string): null {
+  if (!Object.prototype.hasOwnProperty.call(raw, key) || raw[key] !== null) {
+    throw new AllowlyProtocolError(`${key} must be null`);
+  }
+  return null;
 }
 
 function optionalNumber(raw: Record<string, unknown>, key: string): number | null {
@@ -644,6 +734,9 @@ function validateBaseUrl(baseUrl: string, allowInsecure: boolean): string {
     parsed = new URL(normalized);
   } catch {
     throw new Error("baseUrl must be a valid URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("baseUrl must use HTTP or HTTPS");
   }
   if (parsed.protocol !== "https:" && !allowInsecure) {
     throw new Error("baseUrl must use HTTPS");

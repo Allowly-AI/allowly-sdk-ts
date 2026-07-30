@@ -21,6 +21,8 @@ export type {
 
 export interface FetchKeysDocOptions {
   baseUrl?: string;
+  dangerouslyAllowInsecureBaseUrl?: boolean;
+  edgeToken?: string;
   fetch?: typeof globalThis.fetch;
   cacheTtlMs?: number;
   expectedSha256?: string;
@@ -39,7 +41,10 @@ export async function fetchKeysDoc(
   const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   const url = `${baseUrl}/v1/workspaces/${encodeURIComponent(workspaceId)}/keys`;
   const parsed = new URL(url);
-  if (parsed.protocol !== "https:") {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new VerificationError(`keys document URL must use HTTP or HTTPS: ${url}`);
+  }
+  if (parsed.protocol !== "https:" && !opts.dangerouslyAllowInsecureBaseUrl) {
     throw new VerificationError(`keys document URL must use HTTPS: ${url}`);
   }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -53,8 +58,17 @@ export async function fetchKeysDoc(
   }
 
   const fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
-  const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) {
+  const res = await fetchImpl(url, {
+    ...(opts.edgeToken !== undefined
+      ? { headers: { "X-Allowly-Edge-Token": opts.edgeToken } }
+      : {}),
+    redirect: "manual",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (res.redirected) {
+    throw new VerificationError("redirected keys document responses are not allowed");
+  }
+  if (res.status !== 200) {
     throw new VerificationError(`failed to fetch keys document: HTTP ${res.status}`);
   }
   const bytes = new Uint8Array(await res.arrayBuffer());
