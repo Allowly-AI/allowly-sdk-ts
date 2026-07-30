@@ -14,6 +14,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup src/index.ts --format esm --clean && tsc --emitDeclarationOnly",
     "prepack": "npm run build && node --input-type=module -e \"const sdk = await import('@allowly/sdk'); if (typeof sdk.Allowly !== 'function') process.exit(1)\"",
@@ -28,6 +31,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Allowly-AI/allowly-sdk-ts.git"
   },
   "license": "MIT",
   "dependencies": {
