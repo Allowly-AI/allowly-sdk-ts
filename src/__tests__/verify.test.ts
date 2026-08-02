@@ -39,7 +39,7 @@ function signedPolicyEvalReceipt() {
   const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
   const keyId = "test-key/v1";
   const payload = {
-    schema_version: "3",
+    schema_version: "4",
     receipt_id: "rcp_policy_eval",
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
@@ -231,7 +231,7 @@ describe("loadKeysFromJson", () => {
 });
 
 describe("verifyReceipt", () => {
-  it("accepts a wire-3 receipt whose algorithm and key id are signed", async () => {
+  it("accepts a wire-4 receipt whose algorithm and key id are signed", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
 
@@ -241,6 +241,18 @@ describe("verifyReceipt", () => {
         now: new Date("2026-06-09T17:05:00Z"),
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it("rejects receipts from an older wire version", async () => {
+    const { keysDoc, receipt } = signedPolicyEvalReceipt();
+    const keys = loadKeysFromJson(keysDoc);
+
+    await expect(
+      verifyReceipt({ ...receipt, schema_version: "3" }, keys, {
+        expectedWorkspaceId: "ws_1",
+        now: new Date("2026-06-09T17:05:00Z"),
+      }),
+    ).rejects.toThrow('unsupported schema_version: "3" (want "4")');
   });
 
   it("rejects policy_eval on event receipts", async () => {

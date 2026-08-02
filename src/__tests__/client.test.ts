@@ -1173,7 +1173,7 @@ describe("Allowly.receipts.get", () => {
   });
 
   it("returns signed envelope", async () => {
-    const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc", decision: "allow", alg: "Ed25519", key_id: "k", signature: "sig" };
+    const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc", decision: "allow", alg: "Ed25519", key_id: "k", signature: "sig" };
     const fetch = makeFetch(200, { status: "signed", receipt: signedReceipt });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const r = await client.receipts.get("rcp_abc");
@@ -1189,7 +1189,7 @@ describe("Allowly.receipts.get", () => {
 
 describe("Allowly.receipts.fetchSigned", () => {
   it("polls until signed and returns receipt dict", async () => {
-    const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc" };
+    const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
     let call = 0;
     const fetch = vi.fn().mockImplementation(async () => {
       call++;
@@ -1205,7 +1205,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   });
 
   it("continues polling across transport, HTTP 408, and HTTP 5xx failures", async () => {
-    const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc" };
+    const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
     const fetch = vi.fn()
       .mockRejectedValueOnce(new TypeError("offline"))
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -1230,7 +1230,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   it("honors Retry-After while retrying HTTP 429", async () => {
     vi.useFakeTimers();
     try {
-      const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc" };
+      const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
       const fetch = vi.fn()
         .mockResolvedValueOnce(new Response(JSON.stringify({
           error: { code: "rate_limited", message: "slow down" },
@@ -1294,7 +1294,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   it("default timeout covers one >60s signer tick; explicit shorter timeout still fails", async () => {
     vi.useFakeTimers();
     try {
-      const signedReceipt = { schema_version: "3", receipt_id: "rcp_abc" };
+      const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
       const start = Date.now();
       const fetch = vi.fn().mockImplementation(async () => ({
         ok: true,
