@@ -463,7 +463,12 @@ class ReceiptsResource {
 
   async fetchSigned(
     receiptId: string,
-    opts: { pollInterval?: number; timeout?: number } = {}
+    opts: {
+      /** Polling interval in seconds. Defaults to 1. */
+      pollInterval?: number;
+      /** Total timeout in seconds. Defaults to 120. */
+      timeout?: number;
+    } = {}
   ): Promise<Record<string, unknown>> {
     const pollInterval = (opts.pollInterval ?? 1) * 1000;
     // Default timeout covers the signer's once-per-minute batch tick plus
