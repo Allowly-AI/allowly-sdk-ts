@@ -1,6 +1,6 @@
 {
   "name": "@allowly/sdk",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "TypeScript SDK for the Allowly API",
   "type": "module",
   "main": "./dist/index.js",
