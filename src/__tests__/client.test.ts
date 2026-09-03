@@ -1062,18 +1062,14 @@ describe("Allowly.authorizations.revoke", () => {
       .rejects.toThrow("revoked_confirmations");
   });
 
-  it("sends supersededBy on revoke", async () => {
-    const fetch = makeFetch(200, {
-      authorization_id: "auth_123", revoked_at: "2026-05-01T09:00:00Z", receipt: PENDING_RECEIPT,
-      revoked_confirmations: [],
-    });
+  it("rejects legacy supersededBy before making a revoke request", async () => {
+    const fetch = makeFetch(200, {});
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
-    await client.authorizations.revoke("auth_123", { supersededBy: "auth_456" });
+    await expect(client.authorizations.revoke("auth_123", { supersededBy: "auth_456" } as never))
+      .rejects.toThrow("create the successor with replaces instead");
 
-    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.superseded_by).toBe("auth_456");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("percent-encodes reserved chars in the id so it cannot redirect the request", async () => {

@@ -345,11 +345,15 @@ class AuthorizationsResource {
 
   async revoke(
     authorizationId: string,
-    opts: { revokedBy?: string; supersededBy?: string; notes?: string; idempotencyKey?: string } = {}
+    opts: { revokedBy?: string; notes?: string; idempotencyKey?: string } = {}
   ): Promise<AuthorizationRevokeResponse> {
+    if ((opts as Record<string, unknown>).supersededBy !== undefined) {
+      throw new Error(
+        "supersededBy is not supported on revoke; create the successor with replaces instead",
+      );
+    }
     const body: Record<string, string> = {};
     if (opts.revokedBy) body.revoked_by = opts.revokedBy;
-    if (opts.supersededBy) body.superseded_by = opts.supersededBy;
     if (opts.notes) body.notes = opts.notes;
     const raw = await this.client.request<Record<string, unknown>>(
       "DELETE",

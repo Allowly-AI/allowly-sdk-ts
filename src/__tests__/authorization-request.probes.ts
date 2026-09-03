@@ -66,6 +66,12 @@ new Allowly({
   defaultFallback: "fail_open",
 });
 
+const client = new Allowly({ apiKey: "test-key" });
+client.authorizations.revoke("auth_old", {
+  // @ts-expect-error replacements must use authorizations.create({ replaces: "auth_old" })
+  supersededBy: "auth_new",
+});
+
 // @ts-expect-error one of the two request shapes is required
 ({ userId: "u1" }) satisfies AuthorizationCreateRequest;
 
