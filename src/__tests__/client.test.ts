@@ -4,6 +4,7 @@ import {
   AllowlyAPIError,
   AllowlyProtocolError,
   AllowlyTransportError,
+  SEAL_PROFILE,
 } from "../index.js";
 
 const BASE = "https://api.example.com";
@@ -1156,6 +1157,98 @@ describe("Allowly.escalations", () => {
     const res = await client.escalations.reject("esc_abc", { resolvedBy: "compliance:1" });
     expect(res.status).toBe("rejected");
     expect(res.receipt).toBeNull();
+  });
+});
+
+describe("Allowly.seal", () => {
+  const recordSha256 = "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777";
+  const signedReceipt = {
+    schema_version: "4",
+    receipt_id: "rcp_abc",
+    action: "record.seal",
+    signature: "signature",
+  };
+
+  it("hashes raw JSON locally, posts only the digest, and polls until signed", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        request_id: "req_123",
+        profile: SEAL_PROFILE,
+        record_sha256: recordSha256,
+        decision: "allow",
+        reason: "authorization_granted_action_active",
+        receipt: PENDING_RECEIPT,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "signed",
+        receipt: signedReceipt,
+      }), { status: 200 }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    const result = await client.seal('{"b":2,"a":1}', {
+      requestId: "req_123",
+      metadata: { source: "workflow" },
+      pollInterval: 0.001,
+    });
+
+    expect(result).toEqual({
+      requestId: "req_123",
+      profile: SEAL_PROFILE,
+      recordSha256,
+      decision: "allow",
+      reason: "authorization_granted_action_active",
+      receipt: signedReceipt,
+    });
+    expect(fetch.mock.calls[0][0]).toBe(`${BASE}/v1/seal`);
+    const posted = JSON.parse(fetch.mock.calls[0][1].body as string);
+    expect(posted).toEqual({
+      request_id: "req_123",
+      profile: SEAL_PROFILE,
+      record_sha256: recordSha256,
+      metadata: { source: "workflow" },
+    });
+    expect(JSON.stringify(posted)).not.toContain('"a"');
+    expect(fetch.mock.calls[1][0]).toBe(`${BASE}/v1/receipts/rcp_abc`);
+  });
+
+  it("accepts a parsed JSON value through the explicit parsed-value method", async () => {
+    const fetch = makeFetch(200, {
+      request_id: "req_value",
+      profile: SEAL_PROFILE,
+      record_sha256: recordSha256,
+      decision: "allow",
+      reason: "authorization_granted_action_active",
+      receipt: { status: "signed", receipt: signedReceipt },
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.sealValue({ b: 2, a: 1 }, { requestId: "req_value" }))
+      .resolves.toMatchObject({ recordSha256, receipt: signedReceipt });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects ambiguous raw JSON before making a request", async () => {
+    const fetch = vi.fn();
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.seal('{"a":1,"\\u0061":2}', { requestId: "req_bad" }))
+      .rejects.toMatchObject({ code: "duplicate_key" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects response bindings that differ from the request", async () => {
+    const fetch = makeFetch(200, {
+      request_id: "req_other",
+      profile: SEAL_PROFILE,
+      record_sha256: recordSha256,
+      decision: "allow",
+      reason: "authorization_granted_action_active",
+      receipt: { status: "signed", receipt: signedReceipt },
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.seal('{"a":1,"b":2}', { requestId: "req_expected" }))
+      .rejects.toThrow("request_id does not match");
   });
 });
 

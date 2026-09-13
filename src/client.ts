@@ -1,4 +1,5 @@
 import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
+import { SEAL_PROFILE, hashSealJson, hashSealValue } from "./verify.js";
 import type {
   AllowlyOptions,
   CheckResponse,
@@ -17,6 +18,8 @@ import type {
   EscalationResolveResponse,
   ReceiptEnvelope,
   ReceiptEnvelopePending,
+  SealRequest,
+  SealResponse,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.allowly.ai";
@@ -212,6 +215,64 @@ export class Allowly {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async seal(
+    recordJson: string | Uint8Array,
+    req: SealRequest,
+  ): Promise<SealResponse> {
+    return this.sealDigest(hashSealJson(recordJson), req);
+  }
+
+  async sealValue(record: unknown, req: SealRequest): Promise<SealResponse> {
+    return this.sealDigest(hashSealValue(record), req);
+  }
+
+  private async sealDigest(recordSha256: string, req: SealRequest): Promise<SealResponse> {
+    if (typeof req.requestId !== "string" || req.requestId.length === 0) {
+      throw new Error("requestId must be a non-empty string");
+    }
+    const pollInterval = req.pollInterval ?? 1;
+    const timeout = req.timeout ?? 120;
+    if (pollInterval <= 0) throw new Error("pollInterval must be positive");
+    if (timeout <= 0) throw new Error("timeout must be positive");
+    const metadata = validateSealMetadata(req.metadata);
+    const body: Record<string, unknown> = {
+      request_id: req.requestId,
+      profile: SEAL_PROFILE,
+      record_sha256: recordSha256,
+    };
+    if (metadata !== undefined) body.metadata = metadata;
+
+    const raw = requireRecord(
+      await this.request<unknown>("POST", "/v1/seal", body),
+      "seal response",
+    );
+    if (requireString(raw, "request_id") !== req.requestId) {
+      throw new AllowlyProtocolError("seal response request_id does not match the request");
+    }
+    if (requireString(raw, "profile") !== SEAL_PROFILE) {
+      throw new AllowlyProtocolError("seal response profile does not match the request");
+    }
+    if (requireString(raw, "record_sha256") !== recordSha256) {
+      throw new AllowlyProtocolError("seal response record_sha256 does not match the request");
+    }
+    if (requireString(raw, "decision") !== "allow") {
+      throw new AllowlyProtocolError("seal response decision must be 'allow'");
+    }
+    const reason = requireString(raw, "reason");
+    const envelope = parseReceiptEnvelope(raw.receipt);
+    const receipt = envelope.status === "signed"
+      ? envelope.receipt
+      : await this.receipts.fetchSigned(envelope.receiptId, { pollInterval, timeout });
+    return {
+      requestId: req.requestId,
+      profile: SEAL_PROFILE,
+      recordSha256,
+      decision: "allow",
+      reason,
+      receipt,
+    };
   }
 
   async settleBudget(req: {
@@ -537,6 +598,21 @@ function parseReceiptEnvelope(value: unknown): ReceiptEnvelope {
   }
   if (raw.status === "pending") return parsePendingEnvelope(raw);
   throw new AllowlyProtocolError("receipt status must be 'pending' or 'signed'");
+}
+
+function validateSealMetadata(
+  metadata: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (metadata === undefined) return undefined;
+  if (
+    typeof metadata !== "object"
+    || metadata === null
+    || Array.isArray(metadata)
+    || Object.values(metadata).some((value) => typeof value !== "string")
+  ) {
+    throw new Error("metadata must be an object of string values");
+  }
+  return { ...metadata };
 }
 
 function parseCheckResponse(

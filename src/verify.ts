@@ -1,14 +1,35 @@
 import {
+  SEAL_ACTION,
+  SEAL_AGENT_ID,
+  SEAL_MAX_DEPTH,
+  SEAL_MAX_UTF8_BYTES,
+  SEAL_PROFILE,
+  SEAL_USER_ID,
+  SealInputError,
   canonicalize,
+  hashSealJson,
+  hashSealValue,
   type KeyDocument,
   loadKeysFromJson,
   type PublicKey,
+  type SealVerificationResult,
   VerificationError,
   verifyReceipt as verifyReceiptReference,
+  verifySealJson as verifySealJsonReference,
+  verifySealValue as verifySealValueReference,
 } from "@allowly/verifier";
 
 export {
+  SEAL_ACTION,
+  SEAL_AGENT_ID,
+  SEAL_MAX_DEPTH,
+  SEAL_MAX_UTF8_BYTES,
+  SEAL_PROFILE,
+  SEAL_USER_ID,
+  SealInputError,
   canonicalize,
+  hashSealJson,
+  hashSealValue,
   loadKeysFromJson,
   VerificationError,
 };
@@ -17,7 +38,16 @@ export type {
   PublicKey,
   Receipt,
   KeyDocument,
+  SealInputFailure,
+  SealVerificationFailure,
+  SealVerificationResult,
 } from "@allowly/verifier";
+
+export interface VerifySealOptions {
+  expectedWorkspaceId: string;
+  trustedKeyFingerprints?: ReadonlySet<string>;
+  now?: Date;
+}
 
 export interface FetchKeysDocOptions {
   baseUrl?: string;
@@ -106,6 +136,24 @@ export async function verifyReceipt(
   opts: { expectedWorkspaceId: string; now?: Date },
 ): Promise<void> {
   return verifyReceiptReference(receipt, publicKeys, opts);
+}
+
+export async function verifySealJson(
+  rawJson: string | Uint8Array,
+  receipt: Record<string, unknown>,
+  publicKeys: PublicKey[],
+  opts: VerifySealOptions,
+): Promise<SealVerificationResult> {
+  return verifySealJsonReference(rawJson, receipt, publicKeys, opts);
+}
+
+export async function verifySealValue(
+  record: unknown,
+  receipt: Record<string, unknown>,
+  publicKeys: PublicKey[],
+  opts: VerifySealOptions,
+): Promise<SealVerificationResult> {
+  return verifySealValueReference(record, receipt, publicKeys, opts);
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
