@@ -12,12 +12,11 @@ import {
   type KeyDocument,
   loadKeysFromJson,
   type PublicKey,
-  type SealVerificationResult,
   VerificationError,
   verifyReceipt as verifyReceiptReference,
-  verifySealJson as verifySealJsonReference,
-  verifySealValue as verifySealValueReference,
 } from "@allowly/verifier";
+
+export { verifySealJson, verifySealValue } from "@allowly/verifier";
 
 export {
   SEAL_ACTION,
@@ -136,24 +135,6 @@ export async function verifyReceipt(
   opts: { expectedWorkspaceId: string; now?: Date },
 ): Promise<void> {
   return verifyReceiptReference(receipt, publicKeys, opts);
-}
-
-export async function verifySealJson(
-  rawJson: string | Uint8Array,
-  receipt: Record<string, unknown>,
-  publicKeys: PublicKey[],
-  opts: VerifySealOptions,
-): Promise<SealVerificationResult> {
-  return verifySealJsonReference(rawJson, receipt, publicKeys, opts);
-}
-
-export async function verifySealValue(
-  record: unknown,
-  receipt: Record<string, unknown>,
-  publicKeys: PublicKey[],
-  opts: VerifySealOptions,
-): Promise<SealVerificationResult> {
-  return verifySealValueReference(record, receipt, publicKeys, opts);
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
