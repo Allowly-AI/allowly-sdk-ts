@@ -78,13 +78,14 @@ Use `sealValue(parsedJson, ...)` only when the original JSON text is no longer
 available. A parsed value cannot reveal duplicate object names or the original
 number spelling, so `seal` is the safer input boundary.
 
-Verify later with keys and workspace identity from trusted configuration:
+Verify later with the authenticated `workspaceId` response and keys fetched
+from Allowly through an authenticated or previously trusted source:
 
 ```typescript
 import { loadKeysFromJson, verifySealJson } from "@allowly/sdk";
 
 const result = await verifySealJson(rawJson, sealed.receipt, loadKeysFromJson(keysDoc), {
-  expectedWorkspaceId: configuredWorkspaceId,
+  expectedWorkspaceId: sealed.workspaceId,
   trustedKeyFingerprints: configuredKeyFingerprints,
 });
 if (!result.signatureVerified || !result.recordMatches) {

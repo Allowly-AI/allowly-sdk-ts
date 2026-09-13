@@ -26,6 +26,7 @@ export interface SealRequest {
 
 export interface SealResponse {
   requestId: string;
+  workspaceId: string;
   profile: string;
   recordSha256: string;
   decision: "allow";
