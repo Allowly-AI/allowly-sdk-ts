@@ -57,6 +57,41 @@ Use opaque internal subject IDs. Avoid putting raw names, emails, documents, or
 other sensitive data into receipt fields unless that data is intentionally part
 of the audit record.
 
+## Seal a JSON record
+
+`seal` hashes strict raw JSON in your process, sends only its digest to Allowly,
+and waits for the full signed receipt. Generate and persist `requestId` in your
+workflow so a retry recovers the same seal:
+
+```typescript
+import { randomUUID } from "node:crypto";
+
+const requestId = randomUUID();
+const sealed = await allowly.seal(rawJson, {
+  requestId,
+  metadata: { source: "invoice-workflow" },
+});
+await saveBesideRecord(sealed.receipt);
+```
+
+Use `sealValue(parsedJson, ...)` only when the original JSON text is no longer
+available. A parsed value cannot reveal duplicate object names or the original
+number spelling, so `seal` is the safer input boundary.
+
+Verify later with keys and workspace identity from trusted configuration:
+
+```typescript
+import { loadKeysFromJson, verifySealJson } from "@allowly/sdk";
+
+const result = await verifySealJson(rawJson, sealed.receipt, loadKeysFromJson(keysDoc), {
+  expectedWorkspaceId: configuredWorkspaceId,
+  trustedKeyFingerprints: configuredKeyFingerprints,
+});
+if (!result.signatureVerified || !result.recordMatches) {
+  throw new Error(result.failureReason ?? "SEAL verification failed");
+}
+```
+
 ## Verify a signed receipt
 
 ```typescript

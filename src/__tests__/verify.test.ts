@@ -5,8 +5,11 @@ import {
   clearKeysDocCache,
   fetchKeysDoc,
   loadKeysFromJson,
+  hashSealJson,
+  SEAL_PROFILE,
   VerificationError,
   verifyReceipt,
+  verifySealJson,
 } from "../verify.js";
 
 const VALID_DOC = {
@@ -84,6 +87,46 @@ function signedPolicyEvalReceipt() {
       ...payload,
       signature: b64url(signature),
     },
+  };
+}
+
+function signedSealReceipt(rawJson: string) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" });
+  const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
+  const keyId = "seal-key/v1";
+  const payload = {
+    schema_version: "4",
+    receipt_id: "rcp_seal",
+    workspace_id: "ws_1",
+    issued_at: "2026-06-09T17:04:39.114Z",
+    decision: "allow",
+    reason: "authorization_granted_action_active",
+    user_id: "allowly:seal",
+    agent_id: "allowly.seal",
+    action: "record.seal",
+    resource: null,
+    context: {
+      seal_profile: SEAL_PROFILE,
+      record_sha256: hashSealJson(rawJson),
+    },
+    authorization_id: "auth_seal",
+    engine_version: "2026-06-01.2",
+    alg: "Ed25519",
+    key_id: keyId,
+  };
+  return {
+    keysDoc: {
+      workspace_id: "ws_1",
+      keys: [{
+        key_id: keyId,
+        alg: "Ed25519",
+        public_key: b64url(publicKeyRaw),
+        active_from: "2026-01-01T00:00:00.000Z",
+        active_until: null,
+      }],
+    },
+    receipt: { ...payload, signature: b64url(sign(null, canonicalize(payload), privateKey)) },
   };
 }
 
@@ -325,5 +368,36 @@ describe("verifyReceipt", () => {
       expectedWorkspaceId: "ws_other",
       now: new Date("2026-06-09T17:05:00Z"),
     })).rejects.toThrow("workspace_id");
+  });
+});
+
+describe("verifySealJson", () => {
+  it("reports signature verification and record matching separately", async () => {
+    const rawJson = '{"b":2,"a":1}';
+    const { keysDoc, receipt } = signedSealReceipt(rawJson);
+    const keys = loadKeysFromJson(keysDoc);
+    const opts = {
+      expectedWorkspaceId: "ws_1",
+      now: new Date("2026-06-09T17:05:00Z"),
+    };
+
+    await expect(verifySealJson(rawJson, receipt, keys, opts)).resolves.toEqual({
+      signatureVerified: true,
+      recordMatches: true,
+      failureReason: null,
+    });
+    await expect(verifySealJson('{"a":2}', receipt, keys, opts)).resolves.toEqual({
+      signatureVerified: true,
+      recordMatches: false,
+      failureReason: "record_mismatch",
+    });
+    await expect(verifySealJson(rawJson, {
+      ...receipt,
+      signature: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    }, keys, opts)).resolves.toEqual({
+      signatureVerified: false,
+      recordMatches: false,
+      failureReason: "receipt_verification_failed",
+    });
   });
 });

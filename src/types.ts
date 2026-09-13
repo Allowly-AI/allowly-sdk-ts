@@ -15,6 +15,24 @@ export interface ReceiptEnvelopeSigned {
 
 export type ReceiptEnvelope = ReceiptEnvelopePending | ReceiptEnvelopeSigned;
 
+export interface SealRequest {
+  requestId: string;
+  metadata?: Record<string, string>;
+  /** Polling interval in seconds. Defaults to 1. */
+  pollInterval?: number;
+  /** Total signing timeout in seconds. Defaults to 120. */
+  timeout?: number;
+}
+
+export interface SealResponse {
+  requestId: string;
+  profile: string;
+  recordSha256: string;
+  decision: "allow";
+  reason: string;
+  receipt: Record<string, unknown>;
+}
+
 export interface BudgetInfo {
   limitMicros: number;
   spentMicros: number;

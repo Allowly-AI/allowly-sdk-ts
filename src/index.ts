@@ -23,6 +23,8 @@ export type {
   ReceiptEnvelope,
   ReceiptEnvelopePending,
   ReceiptEnvelopeSigned,
+  SealRequest,
+  SealResponse,
   Decision,
   FallbackMode,
   ActionEntry,
