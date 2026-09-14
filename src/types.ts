@@ -1,5 +1,6 @@
 export type Decision = "allow" | "deny" | "confirm" | "escalate";
 export type FallbackMode = "fail_open" | "fail_closed";
+export type SealWebhookStatus = "received" | "signing" | "sealed" | "rejected" | "failed";
 
 export interface ReceiptEnvelopePending {
   status: "pending";
@@ -32,6 +33,28 @@ export interface SealResponse {
   decision: "allow";
   reason: string;
   receipt: Record<string, unknown>;
+}
+
+export interface SealWebhookDelivery {
+  attemptId: string;
+  workspaceId: string;
+  status: SealWebhookStatus;
+  receivedAt: string;
+  updatedAt: string;
+  profile: "allowly.seal.jcs-sha256.v1";
+  recordSha256: string | null;
+  receiptId: string | null;
+  errorCode: string | null;
+  statusUrl: string;
+  receiptUrl: string | null;
+  keysUrl: string;
+  receipt: Record<string, unknown> | null;
+}
+
+export interface SealWebhookClientOptions {
+  dangerouslyAllowInsecureUrl?: boolean;
+  fetch?: typeof globalThis.fetch;
+  requestTimeoutMs?: number;
 }
 
 export interface BudgetInfo {
