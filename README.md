@@ -57,7 +57,35 @@ Use opaque internal subject IDs. Avoid putting raw names, emails, documents, or
 other sensitive data into receipt fields unless that data is intentionally part
 of the audit record.
 
-## Seal a JSON record
+## Send JSON through a private SEAL webhook
+
+Copy the private URL from the dashboard's **SEAL** page. The URL is the only
+credential this client sends; it does not use an ordinary API key.
+
+```typescript
+import { SealWebhookClient } from "@allowly/sdk";
+
+const webhook = new SealWebhookClient(process.env.ALLOWLY_SEAL_WEBHOOK_URL!);
+let delivery = await webhook.send(rawJson, { idempotencyKey: eventId });
+while (delivery.status === "received" || delivery.status === "signing") {
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  delivery = await webhook.getDelivery(delivery.attemptId);
+}
+if (delivery.status !== "sealed") {
+  throw new Error(delivery.errorCode ?? "SEAL delivery failed");
+}
+await saveEvidence(delivery.receipt, await webhook.getKeys());
+```
+
+The webhook processes your JSON to create a fingerprint; Allowly stores the
+fingerprint and signed receipt. Keep the original record in your workflow.
+Treat the full URL like a password and keep it out of logs, tickets, and source
+control. Regenerating or disabling it stops the old URL. Delivery associations
+and status remain available for 7 days; preserve signed receipts and keys under
+your own retention policy. With no `idempotencyKey`, retrying after a lost
+response can create another seal.
+
+## Seal a JSON record with local hashing
 
 `seal` hashes strict raw JSON in your process, sends only its digest to Allowly,
 and waits for the full signed receipt. Generate and persist `requestId` in your
