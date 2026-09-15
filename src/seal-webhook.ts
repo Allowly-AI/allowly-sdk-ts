@@ -35,7 +35,12 @@ export class SealWebhookClient {
 
   async send(
     recordJson: string | Uint8Array,
-    options: { idempotencyKey?: string } = {},
+    options: {
+      idempotencyKey?: string;
+      type?: string;
+      reference?: string;
+      statement?: string;
+    } = {},
   ): Promise<SealWebhookDelivery> {
     if (typeof recordJson !== "string" && !(recordJson instanceof Uint8Array)) {
       throw new TypeError("recordJson must be a string or Uint8Array");
@@ -43,6 +48,28 @@ export class SealWebhookClient {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (options.idempotencyKey !== undefined) {
       headers["Idempotency-Key"] = options.idempotencyKey;
+    }
+    for (const [name, value] of [
+      ["Type", options.type],
+      ["Reference", options.reference],
+      ["Statement", options.statement],
+    ] as const) {
+      if (value === undefined) continue;
+      if (typeof value !== "string") {
+        throw new TypeError(`${name.toLowerCase()} must be a string`);
+      }
+      if (/[^\x20-\x7E]/.test(value)) {
+        throw new Error(`${name.toLowerCase()} must contain printable ASCII only`);
+      }
+      if (value.length > 256) {
+        throw new Error(`${name.toLowerCase()} must be at most 256 characters`);
+      }
+      if (value.trim() !== value) {
+        throw new Error(
+          `${name.toLowerCase()} must not contain leading or trailing whitespace`,
+        );
+      }
+      headers[`Allowly-Seal-${name}`] = value;
     }
     return parseDelivery(await this.request(this.webhookUrl, {
       method: "POST",
@@ -197,6 +224,7 @@ function parseDelivery(value: unknown): SealWebhookDelivery {
   const workspaceId = requireString(raw, "workspace_id");
   const receiptId = optionalString(raw, "receipt_id");
   const receipt = optionalRecord(raw, "receipt");
+  let metadata = optionalMetadata(raw.metadata, "SEAL webhook response metadata");
   if (receipt !== null) {
     if (receiptId === null || receipt.receipt_id !== receiptId) {
       throw new AllowlyProtocolError("SEAL webhook receipt_id binding does not match");
@@ -204,6 +232,17 @@ function parseDelivery(value: unknown): SealWebhookDelivery {
     if (receipt.workspace_id !== workspaceId) {
       throw new AllowlyProtocolError("SEAL webhook workspace_id binding does not match");
     }
+    const context = optionalRecord(receipt, "context");
+    const signedMetadata = optionalMetadata(
+      context?.seal_metadata,
+      "signed SEAL receipt metadata",
+    );
+    if (metadata !== null && !sameMetadata(metadata, signedMetadata)) {
+      throw new AllowlyProtocolError(
+        "SEAL webhook response metadata does not match the signed receipt",
+      );
+    }
+    metadata = signedMetadata;
   }
   return {
     attemptId: requireString(raw, "attempt_id"),
@@ -213,6 +252,7 @@ function parseDelivery(value: unknown): SealWebhookDelivery {
     updatedAt: requireString(raw, "updated_at"),
     profile,
     recordSha256: optionalString(raw, "record_sha256"),
+    metadata,
     receiptId,
     errorCode: optionalString(raw, "error_code"),
     statusUrl: requireString(raw, "status_url"),
@@ -220,6 +260,25 @@ function parseDelivery(value: unknown): SealWebhookDelivery {
     keysUrl: requireString(raw, "keys_url"),
     receipt,
   };
+}
+
+function optionalMetadata(value: unknown, name: string): Record<string, string> | null {
+  if (value === undefined || value === null) return null;
+  const metadata = requireRecord(value, name);
+  if (Object.values(metadata).some((item) => typeof item !== "string")) {
+    throw new AllowlyProtocolError(`${name} must contain only string values`);
+  }
+  return metadata as Record<string, string>;
+}
+
+function sameMetadata(
+  left: Record<string, string>,
+  right: Record<string, string> | null,
+): boolean {
+  if (right === null) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => left[key] === right[key]);
 }
 
 function requireRecord(value: unknown, name: string): Record<string, unknown> {

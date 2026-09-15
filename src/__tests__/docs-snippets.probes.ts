@@ -28,7 +28,12 @@ export async function docsVerifySnippet(receiptId: string): Promise<void> {
 
 export async function docsSealWebhookSnippet(rawJson: string, eventId: string): Promise<void> {
   const webhook = new SealWebhookClient(process.env.ALLOWLY_SEAL_WEBHOOK_URL!);
-  let delivery = await webhook.send(rawJson, { idempotencyKey: eventId });
+  let delivery = await webhook.send(rawJson, {
+    idempotencyKey: eventId,
+    type: "invoice",
+    reference: "INV-1042",
+    statement: "Approved for payment",
+  });
   while (delivery.status === "received" || delivery.status === "signing") {
     delivery = await webhook.getDelivery(delivery.attemptId);
   }
