@@ -66,7 +66,12 @@ credential this client sends; it does not use an ordinary API key.
 import { SealWebhookClient } from "@allowly/sdk";
 
 const webhook = new SealWebhookClient(process.env.ALLOWLY_SEAL_WEBHOOK_URL!);
-let delivery = await webhook.send(rawJson, { idempotencyKey: eventId });
+let delivery = await webhook.send(rawJson, {
+  idempotencyKey: eventId,
+  type: "invoice",
+  reference: "INV-1042",
+  statement: "Approved for payment",
+});
 while (delivery.status === "received" || delivery.status === "signing") {
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   delivery = await webhook.getDelivery(delivery.attemptId);
@@ -79,6 +84,12 @@ await saveEvidence(delivery.receipt, await webhook.getKeys());
 
 The webhook processes your JSON to create a fingerprint; Allowly stores the
 fingerprint and signed receipt. Keep the original record in your workflow.
+Receipt details are sent in the three explicit `Allowly-Seal-*` headers. Their
+values must use printable ASCII, may contain interior spaces, and must not have
+leading or trailing whitespace. The client rejects invalid values instead of
+changing them. Direct API metadata still supports its existing Unicode values.
+When a signed receipt is present, the client returns its signed metadata and
+rejects a conflicting top-level delivery projection.
 Treat the full URL like a password and keep it out of logs, tickets, and source
 control. Regenerating or disabling it stops the old URL. Delivery associations
 and status remain available for 7 days; preserve signed receipts and keys under

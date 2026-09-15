@@ -18,6 +18,7 @@ function delivery(overrides: Record<string, unknown> = {}) {
     updated_at: "2026-09-13T12:00:01Z",
     profile: "allowly.seal.jcs-sha256.v1",
     record_sha256: "a".repeat(64),
+    metadata: null,
     receipt_id: "rcp_test",
     error_code: null,
     status_url: `${BASE}/v1/seal/webhooks/deliveries/swd_attempt?token=${TOKEN}`,
@@ -34,23 +35,51 @@ function response(status: number, body: unknown, headers: Record<string, string>
 
 describe("SealWebhookClient", () => {
   it("posts exact JSON with idempotency and no API key", async () => {
-    const fetch = vi.fn().mockResolvedValue(response(202, delivery()));
+    const details = {
+      type: "invoice",
+      reference: "INV-1042",
+      statement: "Approved for payment",
+    };
+    const fetch = vi.fn().mockResolvedValue(response(202, delivery({ metadata: details })));
     const webhook = new SealWebhookClient(WEBHOOK_URL, { fetch });
     const raw = '{"event":"created","amount":1.00}';
 
-    const result = await webhook.send(raw, { idempotencyKey: "sender-event-7" });
+    const result = await webhook.send(raw, {
+      idempotencyKey: "sender-event-7",
+      type: "invoice",
+      reference: "INV-1042",
+      statement: "Approved for payment",
+    });
 
-    expect(result).toMatchObject({ attemptId: "swd_attempt", status: "signing" });
+    expect(result).toMatchObject({
+      attemptId: "swd_attempt",
+      status: "signing",
+      metadata: details,
+    });
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(WEBHOOK_URL);
     expect(init.body).toBe(raw);
     expect(init.headers).toEqual({
       "Content-Type": "application/json",
       "Idempotency-Key": "sender-event-7",
+      "Allowly-Seal-Type": "invoice",
+      "Allowly-Seal-Reference": "INV-1042",
+      "Allowly-Seal-Statement": "Approved for payment",
     });
     expect(JSON.stringify(init.headers)).not.toContain("Authorization");
     expect(init.redirect).toBe("manual");
   });
+
+  it.each([" leading", "trailing ", "café", "inside\tgap", "x".repeat(257)])(
+    "rejects an invalid detail header value %s",
+    async (reference) => {
+      const fetch = vi.fn();
+      const webhook = new SealWebhookClient(WEBHOOK_URL, { fetch });
+
+      await expect(webhook.send("{}", { reference })).rejects.toThrow();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("fetches scoped status, receipt, and keys from the private URL", async () => {
     const signedReceipt = {
@@ -126,6 +155,87 @@ describe("SealWebhookClient", () => {
 
     await expect(webhook.send("{}"))
       .rejects.toThrow("unknown SEAL webhook status");
+  });
+
+  it("defaults missing metadata from older runtimes to null", async () => {
+    const body = delivery();
+    delete (body as Record<string, unknown>).metadata;
+    const fetch = vi.fn().mockResolvedValue(response(202, body));
+    const webhook = new SealWebhookClient(WEBHOOK_URL, { fetch });
+
+    await expect(webhook.send("{}"))
+      .resolves.toMatchObject({ metadata: null });
+  });
+
+  it.each(["missing", "null"])(
+    "uses signed receipt metadata when top-level metadata is %s",
+    async (topLevel) => {
+      const signedMetadata = {
+        type: "invoice",
+        reference: "INV-1042",
+        statement: "Approved for payment",
+      };
+      const body = delivery({
+        status: "sealed",
+        receipt: {
+          schema_version: "4",
+          receipt_id: "rcp_test",
+          workspace_id: "ws_test",
+          context: { seal_metadata: signedMetadata },
+        },
+      });
+      if (topLevel === "missing") delete (body as Record<string, unknown>).metadata;
+      else body.metadata = null;
+      const fetch = vi.fn().mockResolvedValue(response(200, body));
+      const webhook = new SealWebhookClient(WEBHOOK_URL, { fetch });
+
+      await expect(webhook.getReceipt("rcp_test"))
+        .resolves.toMatchObject({ metadata: signedMetadata });
+    },
+  );
+
+  it("rejects top-level metadata that conflicts with the signed receipt", async () => {
+    const fetch = vi.fn().mockResolvedValue(response(200, delivery({
+      status: "sealed",
+      metadata: { reference: "UNSIGNED" },
+      receipt: {
+        schema_version: "4",
+        receipt_id: "rcp_test",
+        workspace_id: "ws_test",
+        context: { seal_metadata: { reference: "SIGNED" } },
+      },
+    })));
+    const webhook = new SealWebhookClient(WEBHOOK_URL, { fetch });
+
+    await expect(webhook.getReceipt("rcp_test"))
+      .rejects.toThrow(/metadata does not match the signed receipt/);
+  });
+
+  it("rejects malformed metadata inside the signed receipt", async () => {
+    const fetch = vi.fn().mockResolvedValue(response(200, delivery({
+      status: "sealed",
+      receipt: {
+        schema_version: "4",
+        receipt_id: "rcp_test",
+        workspace_id: "ws_test",
+        context: { seal_metadata: { reference: 42 } },
+      },
+    })));
+    const webhook = new SealWebhookClient(WEBHOOK_URL, { fetch });
+
+    await expect(webhook.getReceipt("rcp_test"))
+      .rejects.toThrow(/signed SEAL receipt metadata/);
+  });
+
+  it.each([
+    [["not-an-object"]],
+    [{ reference: 42 }],
+  ])("rejects malformed present metadata %j", async (metadata) => {
+    const fetch = vi.fn().mockResolvedValue(response(202, delivery({ metadata })));
+    const webhook = new SealWebhookClient(WEBHOOK_URL, { fetch });
+
+    await expect(webhook.send("{}"))
+      .rejects.toThrow(/metadata/);
   });
 
   it.each([

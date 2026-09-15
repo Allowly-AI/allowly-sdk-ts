@@ -43,6 +43,7 @@ export interface SealWebhookDelivery {
   updatedAt: string;
   profile: "allowly.seal.jcs-sha256.v1";
   recordSha256: string | null;
+  metadata: Record<string, string> | null;
   receiptId: string | null;
   errorCode: string | null;
   statusUrl: string;
