@@ -1,5 +1,14 @@
 import {
+  SEAL_ACTION,
+  SEAL_AGENT_ID,
+  SEAL_MAX_DEPTH,
+  SEAL_MAX_UTF8_BYTES,
+  SEAL_PROFILE,
+  SEAL_USER_ID,
+  SealInputError,
   canonicalize,
+  hashSealJson,
+  hashSealValue,
   type KeyDocument,
   loadKeysFromJson,
   type PublicKey,
@@ -7,8 +16,19 @@ import {
   verifyReceipt as verifyReceiptReference,
 } from "@allowly/verifier";
 
+export { verifySealJson, verifySealValue } from "@allowly/verifier";
+
 export {
+  SEAL_ACTION,
+  SEAL_AGENT_ID,
+  SEAL_MAX_DEPTH,
+  SEAL_MAX_UTF8_BYTES,
+  SEAL_PROFILE,
+  SEAL_USER_ID,
+  SealInputError,
   canonicalize,
+  hashSealJson,
+  hashSealValue,
   loadKeysFromJson,
   VerificationError,
 };
@@ -17,7 +37,16 @@ export type {
   PublicKey,
   Receipt,
   KeyDocument,
+  SealInputFailure,
+  SealVerificationFailure,
+  SealVerificationResult,
 } from "@allowly/verifier";
+
+export interface VerifySealOptions {
+  expectedWorkspaceId: string;
+  trustedKeyFingerprints?: ReadonlySet<string>;
+  now?: Date;
+}
 
 export interface FetchKeysDocOptions {
   baseUrl?: string;
