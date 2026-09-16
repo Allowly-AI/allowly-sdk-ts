@@ -1,4 +1,12 @@
 import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
+import {
+  SEAL_ACTION,
+  SEAL_AGENT_ID,
+  SEAL_PROFILE,
+  SEAL_USER_ID,
+  hashSealJson,
+  hashSealValue,
+} from "./verify.js";
 import type {
   AllowlyOptions,
   CheckResponse,
@@ -17,6 +25,8 @@ import type {
   EscalationResolveResponse,
   ReceiptEnvelope,
   ReceiptEnvelopePending,
+  SealRequest,
+  SealResponse,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.allowly.ai";
@@ -212,6 +222,71 @@ export class Allowly {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async seal(
+    recordJson: string | Uint8Array,
+    req: SealRequest,
+  ): Promise<SealResponse> {
+    return this.sealDigest(hashSealJson(recordJson), req);
+  }
+
+  async sealValue(record: unknown, req: SealRequest): Promise<SealResponse> {
+    return this.sealDigest(hashSealValue(record), req);
+  }
+
+  private async sealDigest(recordSha256: string, req: SealRequest): Promise<SealResponse> {
+    if (typeof req.requestId !== "string" || req.requestId.length === 0) {
+      throw new Error("requestId must be a non-empty string");
+    }
+    const pollInterval = req.pollInterval ?? 1;
+    const timeout = req.timeout ?? 120;
+    if (pollInterval <= 0) throw new Error("pollInterval must be positive");
+    if (timeout <= 0) throw new Error("timeout must be positive");
+    const metadata = validateSealMetadata(req.metadata);
+    const body: Record<string, unknown> = {
+      request_id: req.requestId,
+      profile: SEAL_PROFILE,
+      record_sha256: recordSha256,
+    };
+    if (metadata !== undefined) body.metadata = metadata;
+
+    const raw = requireRecord(
+      await this.request<unknown>("POST", "/v1/seal", body),
+      "seal response",
+    );
+    if (requireString(raw, "request_id") !== req.requestId) {
+      throw new AllowlyProtocolError("seal response request_id does not match the request");
+    }
+    if (requireString(raw, "profile") !== SEAL_PROFILE) {
+      throw new AllowlyProtocolError("seal response profile does not match the request");
+    }
+    if (requireString(raw, "record_sha256") !== recordSha256) {
+      throw new AllowlyProtocolError("seal response record_sha256 does not match the request");
+    }
+    const workspaceId = requireString(raw, "workspace_id");
+    if (workspaceId.length === 0) {
+      throw new AllowlyProtocolError("seal response workspace_id must be non-empty");
+    }
+    if (requireString(raw, "decision") !== "allow") {
+      throw new AllowlyProtocolError("seal response decision must be 'allow'");
+    }
+    const reason = requireString(raw, "reason");
+    const envelope = parseReceiptEnvelope(raw.receipt);
+    const pendingReceiptId = envelope.status === "pending" ? envelope.receiptId : undefined;
+    const receipt = envelope.status === "signed"
+      ? envelope.receipt
+      : await this.receipts.fetchSigned(envelope.receiptId, { pollInterval, timeout });
+    validateSealReceipt(receipt, recordSha256, workspaceId, pendingReceiptId);
+    return {
+      requestId: req.requestId,
+      workspaceId,
+      profile: SEAL_PROFILE,
+      recordSha256,
+      decision: "allow",
+      reason,
+      receipt,
+    };
   }
 
   async settleBudget(req: {
@@ -492,7 +567,14 @@ class ReceiptsResource {
         let delayMs = pollInterval;
         try {
           const envelope = await this.getWithSignal(receiptId, controller.signal);
-          if (envelope.status === "signed" && Date.now() < deadline) return envelope.receipt;
+          if (envelope.status === "signed" && Date.now() < deadline) {
+            if (requireString(envelope.receipt, "receipt_id") !== receiptId) {
+              throw new AllowlyProtocolError(
+                "signed receipt_id does not match the requested receipt",
+              );
+            }
+            return envelope.receipt;
+          }
         } catch (err) {
           if (isAbortError(err)) break;
           if (err instanceof AllowlyTransportError) {
@@ -537,6 +619,21 @@ function parseReceiptEnvelope(value: unknown): ReceiptEnvelope {
   }
   if (raw.status === "pending") return parsePendingEnvelope(raw);
   throw new AllowlyProtocolError("receipt status must be 'pending' or 'signed'");
+}
+
+function validateSealMetadata(
+  metadata: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (metadata === undefined) return undefined;
+  if (
+    typeof metadata !== "object"
+    || metadata === null
+    || Array.isArray(metadata)
+    || Object.values(metadata).some((value) => typeof value !== "string")
+  ) {
+    throw new Error("metadata must be an object of string values");
+  }
+  return { ...metadata };
 }
 
 function parseCheckResponse(
@@ -619,6 +716,49 @@ function requireRecord(value: unknown, name: string): Record<string, unknown> {
     throw new AllowlyProtocolError(`${name} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function validateSealReceipt(
+  receipt: Record<string, unknown>,
+  recordSha256: string,
+  expectedWorkspaceId: string,
+  expectedReceiptId?: string,
+): void {
+  const receiptId = requireString(receipt, "receipt_id");
+  if (receiptId.length === 0) {
+    throw new AllowlyProtocolError("seal receipt_id must be non-empty");
+  }
+  if (expectedReceiptId !== undefined && receiptId !== expectedReceiptId) {
+    throw new AllowlyProtocolError("seal receipt_id does not match the pending receipt");
+  }
+  const expectedFields: Record<string, string> = {
+    schema_version: "4",
+    action: SEAL_ACTION,
+    decision: "allow",
+    agent_id: SEAL_AGENT_ID,
+    user_id: SEAL_USER_ID,
+    alg: "Ed25519",
+  };
+  for (const [key, expected] of Object.entries(expectedFields)) {
+    if (requireString(receipt, key) !== expected) {
+      throw new AllowlyProtocolError(`seal receipt ${key} does not match the request`);
+    }
+  }
+  if (requireString(receipt, "workspace_id") !== expectedWorkspaceId) {
+    throw new AllowlyProtocolError("seal receipt workspace_id does not match the response");
+  }
+  for (const key of ["key_id", "signature"]) {
+    if (requireString(receipt, key).length === 0) {
+      throw new AllowlyProtocolError(`seal receipt ${key} must be non-empty`);
+    }
+  }
+  const context = requireRecord(receipt.context, "seal receipt context");
+  if (requireString(context, "seal_profile") !== SEAL_PROFILE) {
+    throw new AllowlyProtocolError("seal receipt profile does not match the request");
+  }
+  if (requireString(context, "record_sha256") !== recordSha256) {
+    throw new AllowlyProtocolError("seal receipt record_sha256 does not match the request");
+  }
 }
 
 function requireString(raw: Record<string, unknown>, key: string): string {

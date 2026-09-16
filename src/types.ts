@@ -1,5 +1,6 @@
 export type Decision = "allow" | "deny" | "confirm" | "escalate";
 export type FallbackMode = "fail_open" | "fail_closed";
+export type SealWebhookStatus = "received" | "signing" | "sealed" | "rejected" | "failed";
 
 export interface ReceiptEnvelopePending {
   status: "pending";
@@ -14,6 +15,48 @@ export interface ReceiptEnvelopeSigned {
 }
 
 export type ReceiptEnvelope = ReceiptEnvelopePending | ReceiptEnvelopeSigned;
+
+export interface SealRequest {
+  requestId: string;
+  metadata?: Record<string, string>;
+  /** Polling interval in seconds. Defaults to 1. */
+  pollInterval?: number;
+  /** Total signing timeout in seconds. Defaults to 120. */
+  timeout?: number;
+}
+
+export interface SealResponse {
+  requestId: string;
+  workspaceId: string;
+  profile: string;
+  recordSha256: string;
+  decision: "allow";
+  reason: string;
+  receipt: Record<string, unknown>;
+}
+
+export interface SealWebhookDelivery {
+  attemptId: string;
+  workspaceId: string;
+  status: SealWebhookStatus;
+  receivedAt: string;
+  updatedAt: string;
+  profile: "allowly.seal.jcs-sha256.v1";
+  recordSha256: string | null;
+  metadata: Record<string, string> | null;
+  receiptId: string | null;
+  errorCode: string | null;
+  statusUrl: string;
+  receiptUrl: string | null;
+  keysUrl: string;
+  receipt: Record<string, unknown> | null;
+}
+
+export interface SealWebhookClientOptions {
+  dangerouslyAllowInsecureUrl?: boolean;
+  fetch?: typeof globalThis.fetch;
+  requestTimeoutMs?: number;
+}
 
 export interface BudgetInfo {
   limitMicros: number;

@@ -3,7 +3,7 @@
  * (verify.md, sdk/typescript.md, integration.md). `npm run typecheck` is the
  * assertion that the documented shapes match the SDK's real signatures.
  */
-import { Allowly, fetchKeysDoc, loadKeysFromJson, verifyReceipt, VerificationError } from "../index.js";
+import { Allowly, fetchKeysDoc, loadKeysFromJson, SealWebhookClient, verifyReceipt, VerificationError } from "../index.js";
 
 export async function docsVerifySnippet(receiptId: string): Promise<void> {
   const client = new Allowly({ apiKey: "allowly_l1_s001_..." });
@@ -24,4 +24,20 @@ export async function docsVerifySnippet(receiptId: string): Promise<void> {
 
   // sdk/typescript.md custom polling shape
   await client.receipts.fetchSigned(receiptId, { pollInterval: 2, timeout: 180 });
+}
+
+export async function docsSealWebhookSnippet(rawJson: string, eventId: string): Promise<void> {
+  const webhook = new SealWebhookClient(process.env.ALLOWLY_SEAL_WEBHOOK_URL!);
+  let delivery = await webhook.send(rawJson, {
+    idempotencyKey: eventId,
+    type: "invoice",
+    reference: "INV-1042",
+    statement: "Approved for payment",
+  });
+  while (delivery.status === "received" || delivery.status === "signing") {
+    delivery = await webhook.getDelivery(delivery.attemptId);
+  }
+  if (delivery.status !== "sealed") throw new Error(delivery.errorCode ?? "SEAL failed");
+  await webhook.getReceipt(delivery.receiptId!);
+  await webhook.getKeys();
 }
