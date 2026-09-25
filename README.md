@@ -39,6 +39,67 @@ if (decision.decision === "allow") {
 Only `allow` permits execution. Unavailable checks fail closed unless that
 action has an explicit `fail_open` fallback configured.
 
+## Auth0 agent identity and managed execution
+
+For an authorization bound to an Auth0 machine identity, supply its short-lived
+access token separately from the Allowly runtime key. The supplier runs for
+each check or execution. Use your existing OAuth client library for Auth0 token
+reuse and keep the client secret outside this SDK.
+
+```typescript
+import { Allowly, hashSealValue } from "@allowly/sdk";
+
+const allowly = new Allowly({
+  apiKey: process.env.ALLOWLY_API_KEY!,
+  agentTokenSupplier: getAuth0AgentToken,
+});
+
+await allowly.check({
+  authorizationId: "auth_...",
+  actions: ["order.submit"],
+  clientTimestamp: new Date(),
+});
+
+let execution = await allowly.execute({
+  operationId: "order-123-attempt-1",
+  authorizationId: "auth_...",
+  destinationId: "dst_...",
+  payload: { order: { id: "123", amount_micros: 1_250_000 } },
+  clientTimestamp: new Date(),
+  idempotencyKey: "order-123-attempt-1",
+});
+if (execution.status === "unknown") {
+  execution = await allowly.getExecution("order-123-attempt-1");
+}
+
+const acknowledgment = await allowly.acknowledgeReceipt({
+  receiptId: signedReceipt.receipt_id,
+  receiptSha256: hashSealValue(signedReceipt),
+  clientTimestamp: new Date(),
+  idempotencyKey: `ack:${signedReceipt.receipt_id}`,
+});
+
+const sameAcknowledgment = await allowly.getReceiptAcknowledgment(
+  signedReceipt.receipt_id,
+  acknowledgment.acknowledgmentId,
+);
+```
+
+Persist the operation ID, idempotency key, and exact payload together. Never
+retry an unknown outcome under a new ID. `succeeded` reports a downstream 2xx
+HTTP result; it does not prove that the destination completed its business
+work. Allowly uses the credential stored with its registered destination, so
+do not put that credential in `payload`. Client timestamps are customer-reported
+and do not replace the timestamp issued by Allowly in a receipt.
+
+Each execution response includes `requestFingerprintProfile` and
+`requestDescriptor`. To reproduce `requestFingerprint`, hash the profile, the
+descriptor converted back to its documented snake-case wire keys, and the exact
+original payload with `hashSealValue`, then prefix the result with `sha256:`.
+
+Identity-enabled checks always fail closed, including token supplier failures
+and `identity_verification_unavailable` responses.
+
 ## Create an authorization
 
 Create one authorization for the subject and store its ID in your application:

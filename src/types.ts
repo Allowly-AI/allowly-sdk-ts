@@ -1,6 +1,13 @@
 export type Decision = "allow" | "deny" | "confirm" | "escalate";
 export type FallbackMode = "fail_open" | "fail_closed";
 export type SealWebhookStatus = "received" | "signing" | "sealed" | "rejected" | "failed";
+export type ExecutionStatus =
+  | "denied"
+  | "confirmation_required"
+  | "escalation_required"
+  | "succeeded"
+  | "failed"
+  | "unknown";
 
 export interface ReceiptEnvelopePending {
   status: "pending";
@@ -74,6 +81,86 @@ export interface BudgetSettlementResponse {
   spentBeforeMicros: number;
   spentAfterMicros: number;
   receipt: ReceiptEnvelope;
+}
+
+export interface ExecutionDownstream {
+  source: "registered_destination";
+  httpStatus: number | null;
+  responseFingerprint: string | null;
+  responseFingerprintScope: "complete" | "unavailable";
+  result: Record<string, unknown> | null;
+  resultError: "response_not_json" | "response_mapping_failed" | null;
+}
+
+export interface OutcomeEvidence {
+  profile: "allowly.seal.jcs-sha256.v1";
+  record: Record<string, unknown>;
+  recordSha256: string;
+  receipt: ReceiptEnvelope | null;
+  evidenceError: "unavailable" | null;
+}
+
+export interface ExecuteRequest {
+  operationId: string;
+  authorizationId: string;
+  destinationId: string;
+  payload: unknown;
+  clientTimestamp: Date | string;
+  idempotencyKey: string;
+  agentToken?: string;
+}
+
+export interface ExecutionRequestDescriptor {
+  operationId: string;
+  authorizationId: string;
+  destinationId: string;
+  action: string;
+  method: "POST";
+  url: string;
+}
+
+export interface ExecutionResponse {
+  operationId: string;
+  status: ExecutionStatus;
+  decision: Decision;
+  reason: string;
+  destinationId: string;
+  action: string;
+  requestFingerprintProfile: "allowly.execution.request.v1";
+  requestFingerprint: string;
+  requestDescriptor: ExecutionRequestDescriptor;
+  decisionReceipt: ReceiptEnvelope;
+  downstream: ExecutionDownstream | null;
+  outcomeEvidence: OutcomeEvidence | null;
+  confirmNonce?: string | null;
+  confirmExpiresAt?: string | null;
+  confirmPromptHint?: string | null;
+  escalationId?: string | null;
+  escalationExpiresAt?: string | null;
+  escalationTo?: string | null;
+  escalation?: EscalationInfo | null;
+}
+
+export interface ReceiptAcknowledgmentRequest {
+  receiptId: string;
+  receiptSha256: string;
+  clientTimestamp: Date | string;
+  idempotencyKey: string;
+  agentToken?: string;
+}
+
+export interface ReceiptAcknowledgmentResponse {
+  acknowledgmentId: string;
+  receiptId: string;
+  receiptSha256: string;
+  clientTimestamp: string;
+  receivedAt: string;
+  caller: {
+    kind: "workspace_runtime_key";
+    apiKeyId: string;
+    agentIdentity: Record<string, unknown> | null;
+  };
+  evidence: OutcomeEvidence;
 }
 
 export interface EscalationInfo {
@@ -201,6 +288,7 @@ export interface AuthorizationCreateResponse {
   budgetSpentMicros: number | null;
   replacedAuthorizationId: string | null;
   revocationReceipt: ReceiptEnvelopePending | null;
+  authorizationProvenance: Record<string, unknown> | null;
   /** X-Allowly-Billing-Warning response header, when present. */
   billingWarning?: string;
 }
@@ -238,6 +326,8 @@ export interface EscalationResolveResponse {
 
 export interface AllowlyOptions {
   apiKey: string;
+  agentToken?: string;
+  agentTokenSupplier?: () => string | Promise<string>;
   baseUrl?: string;
   dangerouslyAllowInsecureBaseUrl?: boolean;
   edgeToken?: string;

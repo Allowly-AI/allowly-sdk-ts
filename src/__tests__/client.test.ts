@@ -1497,3 +1497,408 @@ describe("Allowly.receipts.fetchSigned", () => {
       .rejects.toThrow("timeout must be positive");
   });
 });
+
+const EXECUTION_RESPONSE = {
+  operation_id: "op_1",
+  status: "succeeded",
+  decision: "allow",
+  reason: "authorization_granted_action_active",
+  destination_id: "dst_1",
+  action: "order.submit",
+  request_fingerprint_profile: "allowly.execution.request.v1",
+  request_fingerprint: "sha256:request",
+  request_descriptor: {
+    operation_id: "op_1",
+    authorization_id: "auth_1",
+    destination_id: "dst_1",
+    action: "order.submit",
+    method: "POST",
+    url: "https://destination.example/orders",
+  },
+  decision_receipt: PENDING_RECEIPT,
+  downstream: {
+    source: "registered_destination",
+    http_status: 202,
+    response_fingerprint: "sha256:response",
+    response_fingerprint_scope: "complete",
+    result: { provider_operation_id: "downstream_1" },
+    result_error: null,
+  },
+  outcome_evidence: {
+    profile: "allowly.seal.jcs-sha256.v1",
+    record: { operation_id: "op_1" },
+    record_sha256: "sha256:outcome",
+    receipt: PENDING_RECEIPT,
+  },
+};
+
+describe("Allowly identity and governed execution", () => {
+  it("uses the supplier per request and lets an explicit token override it", async () => {
+    const supplier = vi.fn().mockResolvedValue("supplier-token");
+    const fetch = makeFetch(200, checkBody("x", {
+      decision: "allow",
+      reason: "authorization_granted_action_active",
+      receipt: PENDING_RECEIPT,
+    }));
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch,
+      agentToken: "static-token",
+      agentTokenSupplier: supplier,
+    });
+
+    await client.check({
+      authorizationId: "auth_1",
+      actions: ["x"],
+      clientTimestamp: "2026-09-24T20:01:02.123Z",
+    });
+    expect(fetch.mock.calls[0][1].headers).toMatchObject({
+      "X-Allowly-Agent-Token": "supplier-token",
+    });
+    expect(JSON.parse(fetch.mock.calls[0][1].body).client_timestamp)
+      .toBe("2026-09-24T20:01:02.123Z");
+
+    await client.check({
+      authorizationId: "auth_1",
+      actions: ["x"],
+      agentToken: "per-call-token",
+    });
+    expect(fetch.mock.calls[1][1].headers).toMatchObject({
+      "X-Allowly-Agent-Token": "per-call-token",
+    });
+    expect(supplier).toHaveBeenCalledTimes(1);
+  });
+
+  it("never converts identity_verification_unavailable into fail-open", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(503, {
+        error: {
+          code: "identity_verification_unavailable",
+          message: "Identity verification is unavailable",
+        },
+      }),
+      fallbackByAction: { "payments.send": "fail_open" },
+    });
+    await expect(client.check({
+      authorizationId: "auth_1",
+      actions: ["payments.send"],
+      agentToken: "jwt",
+    })).rejects.toMatchObject({ code: "identity_verification_unavailable" });
+  });
+
+  it("redacts the agent token from API error messages and fields", async () => {
+    const token = "sensitive-agent-token";
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(401, {
+        error: {
+          code: "agent_token_invalid",
+          message: `invalid ${token} for test-key`,
+          fields: [{ field: token, message: `bad ${token}` }],
+        },
+      }),
+    });
+    let error: unknown;
+    try {
+      await client.check({ authorizationId: "auth_1", actions: ["x"], agentToken: token });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(JSON.stringify(error)).not.toContain(token);
+    expect(String(error)).not.toContain(token);
+    expect(String(error)).not.toContain("test-key");
+  });
+
+  it("redacts credentials from transport error causes", async () => {
+    const token = "sensitive-agent-token";
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      agentToken: token,
+      fetch: vi.fn().mockRejectedValue(new Error(`network ${token} test-key`)),
+    });
+    let error: unknown;
+    try {
+      await client.execute({
+        operationId: "op_1",
+        authorizationId: "auth_1",
+        destinationId: "dst_1",
+        payload: {},
+        clientTimestamp: "2026-09-24T20:01:02Z",
+        idempotencyKey: "idem_1",
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(AllowlyTransportError);
+    expect(JSON.stringify(error)).not.toContain(token);
+    expect(JSON.stringify(error)).not.toContain("test-key");
+  });
+
+  it("forces identity-enabled transport failures closed", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: vi.fn().mockRejectedValue(new TypeError("offline")),
+      fallbackByAction: { "payments.send": "fail_open" },
+      agentToken: "jwt",
+    });
+    const response = await client.check({
+      authorizationId: "auth_1",
+      actions: ["payments.send"],
+    });
+    expect(response.results["payments.send"]).toMatchObject({
+      decision: "deny",
+      fallbackMode: "fail_closed",
+    });
+  });
+
+  it("does not convert a token supplier timeout into fail-open", async () => {
+    const timeout = Object.assign(new Error("token timeout"), { name: "TimeoutError" });
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: vi.fn(),
+      fallbackByAction: { "payments.send": "fail_open" },
+      agentTokenSupplier: vi.fn().mockRejectedValue(timeout),
+    });
+    await expect(client.check({
+      authorizationId: "auth_1",
+      actions: ["payments.send"],
+    })).rejects.toBe(timeout);
+  });
+
+  it.each([undefined, "", "   "])(
+    "rejects an invalid token supplier result instead of downgrading identity (%s)",
+    async (supplied) => {
+      const fetch = vi.fn();
+      const client = new Allowly({
+        ...CLIENT_OPTS,
+        fetch,
+        fallbackByAction: { "payments.send": "fail_open" },
+        agentToken: "static-token",
+        agentTokenSupplier: vi.fn().mockResolvedValue(supplied) as () => Promise<string>,
+      });
+      await expect(client.check({
+        authorizationId: "auth_1",
+        actions: ["payments.send"],
+      })).rejects.toThrow("supplier must return a non-empty string");
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("executes with stable identifiers and parses selected downstream results", async () => {
+    const fetch = makeFetch(201, EXECUTION_RESPONSE);
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const result = await client.execute({
+      operationId: "op_1",
+      authorizationId: "auth_1",
+      destinationId: "dst_1",
+      payload: { order: { id: "ord_1" } },
+      clientTimestamp: new Date("2026-09-24T20:01:02.000Z"),
+      idempotencyKey: "idem_1",
+      agentToken: "jwt",
+    });
+    expect(result.status).toBe("succeeded");
+    expect(result.requestFingerprintProfile).toBe("allowly.execution.request.v1");
+    expect(result.requestDescriptor.authorizationId).toBe("auth_1");
+    expect(result.downstream?.result).toEqual({ provider_operation_id: "downstream_1" });
+    expect(result.outcomeEvidence?.record).toEqual({ operation_id: "op_1" });
+    const init = fetch.mock.calls[0][1];
+    expect(init.headers).toMatchObject({
+      "Idempotency-Key": "idem_1",
+      "X-Allowly-Agent-Token": "jwt",
+    });
+    const body = JSON.parse(init.body);
+    expect(body).toMatchObject({
+      operation_id: "op_1",
+      client_timestamp: "2026-09-24T20:01:02.000Z",
+    });
+    expect(body).not.toHaveProperty("resource");
+    expect(body).not.toHaveProperty("context");
+  });
+
+  it("keeps explicit unavailable downstream and evidence state", async () => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(201, {
+        ...EXECUTION_RESPONSE,
+        downstream: {
+          ...EXECUTION_RESPONSE.downstream,
+          http_status: null,
+          response_fingerprint: null,
+          response_fingerprint_scope: "unavailable",
+          result: {},
+        },
+        outcome_evidence: {
+          ...EXECUTION_RESPONSE.outcome_evidence,
+          receipt: null,
+          evidence_error: "unavailable",
+        },
+      }),
+    });
+    const result = await client.execute({
+      operationId: "op_1",
+      authorizationId: "auth_1",
+      destinationId: "dst_1",
+      payload: {},
+      clientTimestamp: "2026-09-24T20:01:02Z",
+      idempotencyKey: "idem_1",
+    });
+    expect(result.downstream?.responseFingerprintScope).toBe("unavailable");
+    expect(result.outcomeEvidence?.receipt).toBeNull();
+    expect(result.outcomeEvidence?.evidenceError).toBe("unavailable");
+  });
+
+  it.each([
+    {
+      status: "confirmation_required",
+      decision: "confirm",
+      review: {
+        confirm_nonce: "nonce_1",
+        confirm_expires_at: "2026-09-24T20:06:02Z",
+        confirm_prompt_hint: "Approve the order",
+      },
+    },
+    {
+      status: "escalation_required",
+      decision: "escalate",
+      review: {
+        escalation_id: "esc_1",
+        escalation_expires_at: "2026-09-24T21:01:02Z",
+        escalation_to: "ops",
+        escalation: {
+          escalation_id: "esc_1",
+          status: "pending",
+          escalation_to: "ops",
+          expires_at: "2026-09-24T21:01:02Z",
+        },
+      },
+    },
+  ])("parses paused execute review fields for $status", async ({ status, decision, review }) => {
+    const client = new Allowly({
+      ...CLIENT_OPTS,
+      fetch: makeFetch(200, {
+        ...EXECUTION_RESPONSE,
+        status,
+        decision,
+        downstream: null,
+        outcome_evidence: null,
+        ...review,
+      }),
+    });
+    const result = await client.execute({
+      operationId: "op_1",
+      authorizationId: "auth_1",
+      destinationId: "dst_1",
+      payload: { order: { id: "ord_1" } },
+      clientTimestamp: "2026-09-24T20:01:02Z",
+      idempotencyKey: "idem_1",
+    });
+    expect(result.status).toBe(status);
+    if (decision === "confirm") {
+      expect(result.confirmNonce).toBe("nonce_1");
+      expect(result.confirmPromptHint).toBe("Approve the order");
+    } else {
+      expect(result.escalationId).toBe("esc_1");
+      expect(result.escalation).toMatchObject({ status: "pending", escalationId: "esc_1" });
+    }
+  });
+
+  it("rejects a timestamp without a timezone before execute", async () => {
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: vi.fn() });
+    await expect(client.execute({
+      operationId: "op_1",
+      authorizationId: "auth_1",
+      destinationId: "dst_1",
+      payload: {},
+      clientTimestamp: "2026-09-24T20:01:02",
+      idempotencyKey: "idem_1",
+    })).rejects.toThrow("timezone");
+  });
+
+  it("surfaces an expired execution result without retry or fallback", async () => {
+    const fetch = makeFetch(410, {
+      error: {
+        code: "execution_result_expired",
+        message: "The retained execution result has expired.",
+      },
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    await expect(client.getExecution("op_expired")).rejects.toMatchObject({
+      status: 410,
+      code: "execution_result_expired",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges an exact signed receipt hash without exposing its token", async () => {
+    const response = {
+      acknowledgment_id: "ack_1",
+      receipt_id: "rcp_abc",
+      receipt_sha256: "0".repeat(64),
+      client_timestamp: "2026-09-24T20:02:03.456Z",
+      received_at: "2026-09-24T20:02:04.000Z",
+      caller: {
+        kind: "workspace_runtime_key",
+        api_key_id: "key_1",
+        agent_identity: { status: "verified", subject: "agent|123" },
+      },
+      evidence: {
+        profile: "allowly.seal.jcs-sha256.v1",
+        record: { receipt_id: "rcp_abc" },
+        record_sha256: "sha256:ack",
+        receipt: PENDING_RECEIPT,
+      },
+    };
+    const fetch = makeFetch(200, response);
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const result = await client.acknowledgeReceipt({
+      receiptId: "rcp_abc",
+      receiptSha256: "0".repeat(64),
+      clientTimestamp: "2026-09-24T20:02:03.456Z",
+      idempotencyKey: "ack-idem",
+      agentToken: "jwt",
+    });
+    expect(result.caller.apiKeyId).toBe("key_1");
+    expect(result.caller.agentIdentity).toEqual({
+      status: "verified",
+      subject: "agent|123",
+    });
+    expect(result.evidence.record).toEqual({ receipt_id: "rcp_abc" });
+    expect(fetch.mock.calls[0][1].headers).toMatchObject({
+      "Idempotency-Key": "ack-idem",
+      "X-Allowly-Agent-Token": "jwt",
+    });
+    expect(fetch.mock.calls[0][1].body).not.toContain("jwt");
+  });
+
+  it("gets one receipt acknowledgment by its exact route with identity", async () => {
+    const response = {
+      acknowledgment_id: "ack/1",
+      receipt_id: "rcp/abc",
+      receipt_sha256: "0".repeat(64),
+      client_timestamp: "2026-09-24T20:02:03.456Z",
+      received_at: "2026-09-24T20:02:04.000Z",
+      caller: { kind: "workspace_runtime_key", api_key_id: "key_1" },
+      evidence: {
+        profile: "allowly.seal.jcs-sha256.v1",
+        record: { receipt_id: "rcp_abc" },
+        record_sha256: "sha256:ack",
+        receipt: PENDING_RECEIPT,
+      },
+    };
+    const fetch = makeFetch(200, response);
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const result = await client.getReceiptAcknowledgment(
+      "rcp/abc",
+      "ack/1",
+      { agentToken: "jwt" },
+    );
+    expect(result.acknowledgmentId).toBe("ack/1");
+    expect(fetch.mock.calls[0][0]).toBe(
+      `${BASE}/v1/receipts/rcp%2Fabc/acknowledgments/ack%2F1`,
+    );
+    expect(fetch.mock.calls[0][1].headers).toMatchObject({
+      "X-Allowly-Agent-Token": "jwt",
+    });
+  });
+});

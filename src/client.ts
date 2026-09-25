@@ -23,8 +23,16 @@ import type {
   PolicyEvalInfo,
   EscalationResolveRequest,
   EscalationResolveResponse,
+  ExecuteRequest,
+  ExecutionDownstream,
+  ExecutionRequestDescriptor,
+  ExecutionResponse,
+  ExecutionStatus,
+  OutcomeEvidence,
   ReceiptEnvelope,
   ReceiptEnvelopePending,
+  ReceiptAcknowledgmentRequest,
+  ReceiptAcknowledgmentResponse,
   SealRequest,
   SealResponse,
 } from "./types.js";
@@ -45,6 +53,8 @@ export class AllowlyTransportError extends Error {
 
 export class Allowly {
   private readonly apiKey: string;
+  private readonly agentToken: string | undefined;
+  private readonly agentTokenSupplier: (() => string | Promise<string>) | undefined;
   private readonly edgeToken: string | undefined;
   private readonly baseUrl: string;
   private readonly _fetch: typeof globalThis.fetch;
@@ -59,6 +69,8 @@ export class Allowly {
 
   constructor(options: AllowlyOptions) {
     this.apiKey = options.apiKey;
+    this.agentToken = options.agentToken;
+    this.agentTokenSupplier = options.agentTokenSupplier;
     this.edgeToken = options.edgeToken;
     this.baseUrl = validateBaseUrl(
       options.baseUrl ?? DEFAULT_BASE_URL,
@@ -91,7 +103,11 @@ export class Allowly {
     method: string,
     path: string,
     body?: unknown,
-    opts: { signal?: AbortSignal; headers?: Record<string, string>; expectedStatus?: number } = {}
+    opts: {
+      signal?: AbortSignal;
+      headers?: Record<string, string>;
+      expectedStatus?: number | readonly number[];
+    } = {}
   ): Promise<T> {
     const { data } = await this.requestWithHeaders<T>(method, path, body, opts);
     return data;
@@ -102,9 +118,23 @@ export class Allowly {
     method: string,
     path: string,
     body?: unknown,
-    opts: { signal?: AbortSignal; headers?: Record<string, string>; expectedStatus?: number } = {}
+    opts: {
+      signal?: AbortSignal;
+      headers?: Record<string, string>;
+      expectedStatus?: number | readonly number[];
+    } = {}
   ): Promise<{ data: T; headers: Headers }> {
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
+    const requestAgentToken = opts.headers?.["X-Allowly-Agent-Token"];
+    const sensitiveValues = [this.apiKey, this.edgeToken, requestAgentToken]
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+    const safeErrorText = (value: unknown, fallback: string): string => {
+      let rendered = typeof value === "string" ? value : fallback;
+      for (const sensitiveValue of sensitiveValues) {
+        rendered = rendered.split(sensitiveValue).join("[REDACTED]");
+      }
+      return rendered;
+    };
     let res: Response;
     try {
       res = await this._fetch(`${this.baseUrl}${path}`, {
@@ -123,14 +153,20 @@ export class Allowly {
       });
     } catch (err) {
       if (isAbortError(err)) throw err;
-      throw new AllowlyTransportError(err);
+      const safeCause = new Error(safeErrorText(
+        err instanceof Error ? err.message : undefined,
+        "Allowly transport failed",
+      ));
+      throw new AllowlyTransportError(safeCause);
     }
 
     if (res.redirected) throw new AllowlyProtocolError("redirected responses are not allowed");
-    const expectedStatus = opts.expectedStatus ?? 200;
-    if (res.ok && res.status !== expectedStatus) {
+    const expectedStatuses = Array.isArray(opts.expectedStatus)
+      ? opts.expectedStatus
+      : [opts.expectedStatus ?? 200];
+    if (res.ok && !expectedStatuses.includes(res.status)) {
       throw new AllowlyProtocolError(
-        `unexpected successful HTTP status: got ${res.status}, want ${expectedStatus}`,
+        `unexpected successful HTTP status: got ${res.status}, want ${expectedStatuses.join(" or ")}`,
       );
     }
     if (res.status === 204) return { data: undefined as T, headers: res.headers };
@@ -148,7 +184,11 @@ export class Allowly {
         ? (json as Record<string, unknown>).error
         : undefined;
       if (typeof rawError === "string") {
-        throw new AllowlyAPIError(res.status, { code: "error", message: rawError }, retryAfterSeconds);
+        throw new AllowlyAPIError(
+          res.status,
+          { code: "error", message: safeErrorText(rawError, "Unknown error") },
+          retryAfterSeconds,
+        );
       }
       const error = rawError && typeof rawError === "object"
         ? rawError as Record<string, unknown>
@@ -160,11 +200,12 @@ export class Allowly {
             && typeof (field as Record<string, unknown>).message === "string")
         : undefined;
       throw new AllowlyAPIError(res.status, {
-        code: typeof error.code === "string" ? error.code : "error",
-        message: typeof error.message === "string"
-          ? error.message
-          : res.statusText || "Unknown error",
-        fields,
+        code: safeErrorText(error.code, "error"),
+        message: safeErrorText(error.message, res.statusText || "Unknown error"),
+        fields: fields?.map((field) => ({
+          field: safeErrorText(field.field, ""),
+          message: safeErrorText(field.message, ""),
+        })),
       }, retryAfterSeconds);
     }
 
@@ -180,6 +221,8 @@ export class Allowly {
     context?: Record<string, unknown>;
     wait?: boolean;
     idempotencyKey?: string;
+    clientTimestamp?: Date | string;
+    agentToken?: string;
   }): Promise<CheckResponse> {
     const path = "/v1/check" + (req.wait ? "?wait=true" : "");
     const controller = new AbortController();
@@ -192,11 +235,16 @@ export class Allowly {
       session_id: req.sessionId,
       estimated_cost_micros: req.estimatedCostMicros,
       context: req.context ?? {},
+      ...(req.clientTimestamp !== undefined
+        ? { client_timestamp: clientTimestamp(req.clientTimestamp) }
+        : {}),
     };
+    const identityHeaders = await this.identityHeaders(req.agentToken, req.idempotencyKey);
+    const identityEnabled = identityHeaders?.["X-Allowly-Agent-Token"] !== undefined;
     try {
       const { data: raw, headers } = await this.requestWithHeaders<Record<string, unknown>>("POST", path, body, {
         signal: controller.signal,
-        headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
+        headers: identityHeaders,
       });
       const response = parseCheckResponse(raw, req.authorizationId, req.actions);
       const billingWarning = headers.get("X-Allowly-Billing-Warning");
@@ -204,24 +252,47 @@ export class Allowly {
       return response;
     } catch (err) {
       if (isAbortError(err)) {
-        return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
+        return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout", identityEnabled);
       }
       if (err instanceof AllowlyAPIError) {
+        if (err.code === "identity_verification_unavailable") throw err;
         if (err.status === 408) {
-          return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout");
+          return this.fallbackCheckResponse(req.authorizationId, req.actions, "timeout", identityEnabled);
         }
         if (err.status >= 500) {
-          return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable");
+          return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable", identityEnabled);
         }
         throw err;
       }
       if (err instanceof AllowlyTransportError) {
-        return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable");
+        return this.fallbackCheckResponse(req.authorizationId, req.actions, "unreachable", identityEnabled);
       }
       throw err;
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async identityHeaders(
+    explicitAgentToken?: string,
+    idempotencyKey?: string,
+  ): Promise<Record<string, string> | undefined> {
+    let token = explicitAgentToken;
+    if (token === undefined && this.agentTokenSupplier !== undefined) {
+      token = await this.agentTokenSupplier();
+      if (typeof token !== "string" || token.trim().length === 0) {
+        throw new Error("agent token supplier must return a non-empty string");
+      }
+    } else if (token === undefined) token = this.agentToken;
+    const headers: Record<string, string> = {};
+    if (token !== undefined) {
+      if (typeof token !== "string" || token.trim().length === 0) {
+        throw new Error("agent token must be a non-empty string");
+      }
+      headers["X-Allowly-Agent-Token"] = token;
+    }
+    if (idempotencyKey !== undefined) headers["Idempotency-Key"] = idempotencyKey;
+    return Object.keys(headers).length > 0 ? headers : undefined;
   }
 
   async seal(
@@ -308,6 +379,92 @@ export class Allowly {
     return parseBudgetSettlementResponse(raw);
   }
 
+  async execute(req: ExecuteRequest): Promise<ExecutionResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      "/v1/execute",
+      {
+        operation_id: req.operationId,
+        authorization_id: req.authorizationId,
+        destination_id: req.destinationId,
+        payload: req.payload,
+        client_timestamp: clientTimestamp(req.clientTimestamp),
+      },
+      {
+        headers: await this.identityHeaders(req.agentToken, req.idempotencyKey),
+        expectedStatus: [200, 201],
+      },
+    );
+    const response = parseExecutionResponse(raw);
+    if (response.operationId !== req.operationId
+        || response.destinationId !== req.destinationId
+        || response.requestDescriptor.authorizationId !== req.authorizationId) {
+      throw new AllowlyProtocolError("execution response does not match the requested operation");
+    }
+    return response;
+  }
+
+  async getExecution(
+    operationId: string,
+    opts: { agentToken?: string } = {},
+  ): Promise<ExecutionResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "GET",
+      `/v1/executions/${encodeURIComponent(operationId)}`,
+      undefined,
+      { headers: await this.identityHeaders(opts.agentToken) },
+    );
+    const response = parseExecutionResponse(raw);
+    if (response.operationId !== operationId) {
+      throw new AllowlyProtocolError("execution response does not match the requested operation");
+    }
+    return response;
+  }
+
+  async acknowledgeReceipt(
+    req: ReceiptAcknowledgmentRequest,
+  ): Promise<ReceiptAcknowledgmentResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      `/v1/receipts/${encodeURIComponent(req.receiptId)}/acknowledgments`,
+      {
+        receipt_sha256: req.receiptSha256,
+        client_timestamp: clientTimestamp(req.clientTimestamp),
+      },
+      {
+        headers: await this.identityHeaders(req.agentToken, req.idempotencyKey),
+        expectedStatus: [200, 201],
+      },
+    );
+    const response = parseReceiptAcknowledgmentResponse(raw);
+    if (response.receiptId !== req.receiptId) {
+      throw new AllowlyProtocolError(
+        "receipt acknowledgment response does not match the requested receipt",
+      );
+    }
+    return response;
+  }
+
+  async getReceiptAcknowledgment(
+    receiptId: string,
+    acknowledgmentId: string,
+    opts: { agentToken?: string } = {},
+  ): Promise<ReceiptAcknowledgmentResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "GET",
+      `/v1/receipts/${encodeURIComponent(receiptId)}/acknowledgments/${encodeURIComponent(acknowledgmentId)}`,
+      undefined,
+      { headers: await this.identityHeaders(opts.agentToken) },
+    );
+    const response = parseReceiptAcknowledgmentResponse(raw);
+    if (response.receiptId !== receiptId || response.acknowledgmentId !== acknowledgmentId) {
+      throw new AllowlyProtocolError(
+        "receipt acknowledgment response does not match the requested acknowledgment",
+      );
+    }
+    return response;
+  }
+
   private fallbackModeForAction(action: string): FallbackMode {
     return Object.prototype.hasOwnProperty.call(this.fallbackByAction, action)
       ? this.fallbackByAction[action]
@@ -317,7 +474,8 @@ export class Allowly {
   private fallbackCheckResponse(
     authorizationId: string,
     actions: string[],
-    failure: "timeout" | "unreachable"
+    failure: "timeout" | "unreachable",
+    forceFailClosed = false,
   ): CheckResponse {
     return {
       authorizationId,
@@ -327,7 +485,9 @@ export class Allowly {
       engineVersion: "sdk_fallback",
       results: Object.fromEntries(
         actions.map((action) => {
-          const fallbackMode = this.fallbackModeForAction(action);
+          const fallbackMode = forceFailClosed
+            ? "fail_closed"
+            : this.fallbackModeForAction(action);
           const opened = fallbackMode === "fail_open";
           return [
             action,
@@ -415,6 +575,9 @@ class AuthorizationsResource {
       revocationReceipt: raw.revocation_receipt == null
         ? null
         : parsePendingEnvelope(raw.revocation_receipt),
+      authorizationProvenance: raw.authorization_provenance == null
+        ? null
+        : requireRecord(raw.authorization_provenance, "authorization provenance"),
     };
   }
 
@@ -899,6 +1062,181 @@ function parseRetryAfter(value: string | null): number | undefined {
   if (value === null) return undefined;
   const seconds = Number(value.trim());
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
+function clientTimestamp(value: Date | string): string {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) throw new Error("clientTimestamp must be a valid Date");
+    return value.toISOString();
+  }
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("clientTimestamp must be a non-empty timezone-aware timestamp");
+  }
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value) || Number.isNaN(Date.parse(value))) {
+    throw new Error("clientTimestamp must include a valid timezone");
+  }
+  return value;
+}
+
+function parseExecutionResponse(value: unknown): ExecutionResponse {
+  const raw = requireRecord(value, "execution response");
+  const operationId = requireString(raw, "operation_id");
+  const destinationId = requireString(raw, "destination_id");
+  const action = requireString(raw, "action");
+  const status = requireString(raw, "status");
+  const statuses: ExecutionStatus[] = [
+    "denied",
+    "confirmation_required",
+    "escalation_required",
+    "succeeded",
+    "failed",
+    "unknown",
+  ];
+  if (!statuses.includes(status as ExecutionStatus)) {
+    throw new AllowlyProtocolError(`invalid execution status: ${JSON.stringify(status)}`);
+  }
+  const decision = requireString(raw, "decision");
+  if (!["allow", "deny", "confirm", "escalate"].includes(decision)) {
+    throw new AllowlyProtocolError(`invalid execution decision: ${JSON.stringify(decision)}`);
+  }
+  const requestFingerprintProfile = requireString(raw, "request_fingerprint_profile");
+  if (requestFingerprintProfile !== "allowly.execution.request.v1") {
+    throw new AllowlyProtocolError(
+      `invalid execution request fingerprint profile: ${JSON.stringify(requestFingerprintProfile)}`,
+    );
+  }
+  const descriptorRaw = requireRecord(raw.request_descriptor, "execution request descriptor");
+  const descriptorMethod = requireString(descriptorRaw, "method");
+  if (descriptorMethod !== "POST") {
+    throw new AllowlyProtocolError(
+      `invalid execution request descriptor method: ${JSON.stringify(descriptorMethod)}`,
+    );
+  }
+  const requestDescriptor: ExecutionRequestDescriptor = {
+    operationId: requireString(descriptorRaw, "operation_id"),
+    authorizationId: requireString(descriptorRaw, "authorization_id"),
+    destinationId: requireString(descriptorRaw, "destination_id"),
+    action: requireString(descriptorRaw, "action"),
+    method: "POST",
+    url: requireString(descriptorRaw, "url"),
+  };
+  if (requestDescriptor.operationId !== operationId
+      || requestDescriptor.destinationId !== destinationId
+      || requestDescriptor.action !== action) {
+    throw new AllowlyProtocolError("execution request descriptor does not match the response");
+  }
+  let downstream: ExecutionDownstream | null = null;
+  if (raw.downstream !== undefined && raw.downstream !== null) {
+    const item = requireRecord(raw.downstream, "execution downstream");
+    const source = requireString(item, "source");
+    if (source !== "registered_destination") {
+      throw new AllowlyProtocolError(`invalid execution downstream source: ${JSON.stringify(source)}`);
+    }
+    const httpStatus = item.http_status;
+    if (httpStatus !== null && httpStatus !== undefined && typeof httpStatus !== "number") {
+      throw new AllowlyProtocolError("execution downstream http_status must be a number or null");
+    }
+    const responseFingerprint = item.response_fingerprint;
+    if (responseFingerprint !== null && responseFingerprint !== undefined
+        && typeof responseFingerprint !== "string") {
+      throw new AllowlyProtocolError(
+        "execution downstream response_fingerprint must be a string or null",
+      );
+    }
+    const responseFingerprintScope = requireString(item, "response_fingerprint_scope");
+    if (responseFingerprintScope !== "complete" && responseFingerprintScope !== "unavailable") {
+      throw new AllowlyProtocolError(
+        `invalid execution downstream response_fingerprint_scope: ${JSON.stringify(responseFingerprintScope)}`,
+      );
+    }
+    const result = item.result === null || item.result === undefined
+      ? null
+      : requireRecord(item.result, "execution downstream result");
+    const resultError = item.result_error ?? null;
+    if (![null, "response_not_json", "response_mapping_failed"].includes(resultError as any)) {
+      throw new AllowlyProtocolError(
+        `invalid execution downstream result_error: ${JSON.stringify(resultError)}`,
+      );
+    }
+    downstream = {
+      source: "registered_destination",
+      httpStatus: (httpStatus as number | null | undefined) ?? null,
+      responseFingerprint: (responseFingerprint as string | null | undefined) ?? null,
+      responseFingerprintScope,
+      result,
+      resultError: resultError as ExecutionDownstream["resultError"],
+    };
+  }
+  return {
+    operationId,
+    status: status as ExecutionStatus,
+    decision: decision as ExecutionResponse["decision"],
+    reason: requireString(raw, "reason"),
+    destinationId,
+    action,
+    requestFingerprintProfile,
+    requestFingerprint: requireString(raw, "request_fingerprint"),
+    requestDescriptor,
+    decisionReceipt: parseReceiptEnvelope(raw.decision_receipt),
+    downstream,
+    outcomeEvidence: raw.outcome_evidence === undefined || raw.outcome_evidence === null
+      ? null
+      : parseOutcomeEvidence(raw.outcome_evidence),
+    confirmNonce: optionalString(raw, "confirm_nonce"),
+    confirmExpiresAt: optionalString(raw, "confirm_expires_at"),
+    confirmPromptHint: optionalString(raw, "confirm_prompt_hint"),
+    escalationId: optionalString(raw, "escalation_id"),
+    escalationExpiresAt: optionalString(raw, "escalation_expires_at"),
+    escalationTo: optionalString(raw, "escalation_to"),
+    escalation: parseEscalationInfo(raw.escalation),
+  };
+}
+
+function parseOutcomeEvidence(value: unknown): OutcomeEvidence {
+  const raw = requireRecord(value, "outcome evidence");
+  const profile = requireString(raw, "profile");
+  if (profile !== "allowly.seal.jcs-sha256.v1") {
+    throw new AllowlyProtocolError(`invalid outcome evidence profile: ${JSON.stringify(profile)}`);
+  }
+  const evidenceError = raw.evidence_error ?? null;
+  if (evidenceError !== null && evidenceError !== "unavailable") {
+    throw new AllowlyProtocolError(
+      `invalid outcome evidence error: ${JSON.stringify(evidenceError)}`,
+    );
+  }
+  return {
+    profile,
+    record: requireRecord(raw.record, "outcome evidence record"),
+    recordSha256: requireString(raw, "record_sha256"),
+    receipt: raw.receipt === null || raw.receipt === undefined
+      ? null
+      : parseReceiptEnvelope(raw.receipt),
+    evidenceError,
+  };
+}
+
+function parseReceiptAcknowledgmentResponse(value: unknown): ReceiptAcknowledgmentResponse {
+  const raw = requireRecord(value, "receipt acknowledgment response");
+  const caller = requireRecord(raw.caller, "receipt acknowledgment caller");
+  const kind = requireString(caller, "kind");
+  if (kind !== "workspace_runtime_key") {
+    throw new AllowlyProtocolError(`invalid receipt acknowledgment caller kind: ${JSON.stringify(kind)}`);
+  }
+  return {
+    acknowledgmentId: requireString(raw, "acknowledgment_id"),
+    receiptId: requireString(raw, "receipt_id"),
+    receiptSha256: requireString(raw, "receipt_sha256"),
+    clientTimestamp: requireString(raw, "client_timestamp"),
+    receivedAt: requireString(raw, "received_at"),
+    caller: {
+      kind: "workspace_runtime_key",
+      apiKeyId: requireString(caller, "api_key_id"),
+      agentIdentity: caller.agent_identity === null || caller.agent_identity === undefined
+        ? null
+        : requireRecord(caller.agent_identity, "receipt acknowledgment agent identity"),
+    },
+    evidence: parseOutcomeEvidence(raw.evidence),
+  };
 }
 
 function isAbortError(err: unknown): boolean {
