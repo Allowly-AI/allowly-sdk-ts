@@ -1,6 +1,8 @@
 import { Allowly } from "../index.js";
 import type {
+  ActionEntry,
   ExecuteRequest,
+  PrepareExecutionRequest,
   ReceiptAcknowledgmentRequest,
 } from "../types.js";
 
@@ -25,6 +27,39 @@ const client = new Allowly({
   idempotencyKey: "ack-123",
 }) satisfies ReceiptAcknowledgmentRequest;
 
+const executableAction = {
+  name: "greenhouse.candidates.update",
+  executableOperations: [{
+    enabledExecutableId: "exe_123",
+    providerId: "greenhouse",
+    operationId: "greenhouse.candidates.update",
+    catalogRevision: "catalog-2026-09-27",
+    definitionFingerprint: `sha256:${"0".repeat(64)}`,
+    minimumEvidenceMode: "receipt",
+  }],
+} satisfies ActionEntry;
+
+({
+  operationId: "candidate-123-offer-1",
+  authorizationId: "auth_123",
+  enabledExecutableId: "exe_123",
+  catalogOperationId: "greenhouse.candidates.update",
+  action: "greenhouse.candidates.update",
+  evidenceMode: "receipt",
+  httpRequest: {
+    method: "PATCH",
+    origin: "https://harvest.greenhouse.io",
+    path: "/v1/candidates/123",
+    query: "",
+    headers: [],
+    bodySha256: `sha256:${"0".repeat(64)}`,
+    bodySize: 0,
+    contentType: null,
+  },
+  clientTimestamp: new Date(),
+  idempotencyKey: "candidate-123-offer-1",
+}) satisfies PrepareExecutionRequest;
+
 void client.check({
   authorizationId: "auth_123",
   actions: ["order.submit"],
@@ -42,6 +77,24 @@ void client.execute({
 });
 
 void client.getExecution("order-123", { agentToken: "one-request-token" });
+
+void client.executeHttp("https://harvest.greenhouse.io/v1/candidates/123", {
+  operationId: "candidate-123-offer-1",
+  authorizationId: "auth_123",
+  enabledExecutableId: "exe_123",
+  catalogOperationId: "greenhouse.candidates.update",
+  action: "greenhouse.candidates.update",
+  method: "PATCH",
+  headers: { authorization: "Basic local-provider-credential" },
+  journalDirectory: "/var/lib/my-agent/allowly-executions",
+});
+
+void client.authorizations.create({
+  userId: "user_123",
+  agentId: "agent_123",
+  actions: [executableAction],
+  expiresAt: "2026-12-31T00:00:00Z",
+});
 
 void client.acknowledgeReceipt({
   receiptId: "rcp_123",

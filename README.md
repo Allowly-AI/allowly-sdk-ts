@@ -100,6 +100,88 @@ original payload with `hashSealValue`, then prefix the result with `sha256:`.
 Identity-enabled checks always fail closed, including token supplier failures
 and `identity_verification_unavailable` responses.
 
+## Execute HTTP with provider credentials kept locally
+
+Enable a provider in **Settings → Executables** and grant the exact catalog
+operation to an action before using `executeHttp`. The SDK sends a request
+descriptor and byte commitments to Allowly for approval, then sends the original
+HTTP request from your runtime.
+Allowly receives the method, origin, path, query, content type, byte counts, header
+names and hashes, body hash, and customer-reported policy input. Header values and
+body bytes stay local. Put provider credentials in local headers; do not put
+secrets in the URL, query, or policy input.
+
+```typescript
+const result = await allowly.executeHttp(
+  "https://harvest.greenhouse.io/v1/candidates/123",
+  {
+    operationId: "candidate-123-offer-1", // persist and reuse this ID
+    authorizationId: "auth_...",
+    enabledExecutableId: "exe_...",
+    catalogOperationId: "greenhouse.candidates.update",
+    action: "greenhouse.candidates.update",
+    method: "PATCH",
+    headers: {
+      authorization: `Basic ${process.env.GREENHOUSE_API_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ stage: "offer" }),
+    policyInput: {
+      resource: "candidate:123",
+      context: { stage: "offer" }, // customer-reported policy input
+    },
+    journalDirectory: "/var/lib/my-agent/allowly-executions",
+  },
+);
+
+if (result.state === "not_allowed") return;
+if (result.state === "unknown") {
+  // Reconcile the same operation. Never send the provider request again.
+  await allowly.resumeHttpExecution({
+    operationId: "candidate-123-offer-1",
+    journalDirectory: "/var/lib/my-agent/allowly-executions",
+  });
+}
+```
+
+The private journal stores request commitments, the approval, and a pending
+outcome upload. It does not store the provider credential or request body. Once
+dispatch has been attempted, resume only uploads the same stored outcome or
+reconciles the same operation ID. Redirects are not followed, DNS must resolve
+only to public addresses, and the chosen address is pinned for the TLS
+connection.
+
+The decision receipt can still be pending when the HTTP response returns.
+Finish and verify that evidence later; this does not contact the provider:
+
+```typescript
+import {
+  completeCustomerExecutionEvidence,
+  fetchKeysDoc,
+  loadKeysFromJson,
+} from "@allowly/sdk";
+
+const keys = loadKeysFromJson(await fetchKeysDoc(configuredWorkspaceId));
+const completeEvidence = await completeCustomerExecutionEvidence(
+  allowly,
+  result.evidencePackage,
+  keys,
+  {
+    expectedWorkspaceId: configuredWorkspaceId,
+    trustedKeyFingerprints: configuredKeyFingerprints,
+  },
+);
+await saveEvidence(completeEvidence);
+```
+
+`receipt` evidence records the customer runtime's reported HTTP outcome. It
+does not verify business completion. If the policy upgrades the request to
+`witnessed`, `executeHttp` fails closed unless native witness options were
+provided. The current native profile is limited to HTTPS on port 443, HTTP/1.1
+over TLS 1.2, a 2 KiB request transcript, a 16 KiB UTF-8 response, and no
+redirect follow. Use witnessed mode only when the catalog and deployed witness
+service report it available.
+
 ## Create an authorization
 
 Create one authorization for the subject and store its ID in your application:

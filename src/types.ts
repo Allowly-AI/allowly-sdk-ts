@@ -141,6 +141,244 @@ export interface ExecutionResponse {
   escalation?: EscalationInfo | null;
 }
 
+export type CustomerEvidenceMode = "receipt" | "witnessed";
+
+export interface CustomerHeaderCommitment {
+  name: string;
+  valueSha256: string;
+}
+
+/** The request summary sent to Allowly. Header values and body bytes stay local. */
+export interface CustomerHttpRequestCommitment {
+  method: string;
+  origin: string;
+  path: string;
+  query: string;
+  headers: CustomerHeaderCommitment[];
+  bodySha256: string;
+  bodySize: number;
+  contentType: string | null;
+}
+
+export interface CustomerPolicyInput {
+  resource?: string | null;
+  context?: Record<string, unknown>;
+  estimatedCostMicros?: number | null;
+}
+
+export interface PrepareExecutionRequest {
+  operationId: string;
+  authorizationId: string;
+  enabledExecutableId: string;
+  catalogOperationId: string;
+  action: string;
+  evidenceMode: CustomerEvidenceMode;
+  httpRequest: CustomerHttpRequestCommitment;
+  policyInput?: CustomerPolicyInput;
+  clientTimestamp: Date | string;
+  idempotencyKey: string;
+  agentToken?: string;
+}
+
+export interface CustomerExecutionRequestDescriptor {
+  operationId: string;
+  authorizationId: string;
+  destinationId: string;
+  action: string;
+  method: string;
+  origin: string;
+  path: string;
+  query: string;
+  headers: CustomerHeaderCommitment[];
+  bodySha256: string;
+  bodySize: number;
+  contentType: string | null;
+}
+
+export interface CustomerExecutionWitnessSession {
+  sessionId: string;
+  witnessUrl: string;
+  expiresAt: string;
+  trustedNotaryKeyFingerprintSha256: string;
+  nativeProfile: "customer_held_tlsn_bundle_v1";
+  admissionTokenDelivery: "separate_one_time_endpoint";
+}
+
+export interface CustomerExecutionDownstream {
+  source: "customer_runtime";
+  httpStatus: number | null;
+  responseFingerprint: string | null;
+  responseFingerprintScope: "complete" | "unavailable";
+  result: Record<string, unknown>;
+  resultError: "response_not_json" | "response_mapping_failed" | null;
+  businessCompletion: "not_verified" | null;
+}
+
+export type CustomerExecutionStatus =
+  | "denied"
+  | "confirmation_required"
+  | "escalation_required"
+  | "approved"
+  | "succeeded"
+  | "failed"
+  | "unknown";
+
+export interface CustomerExecutionResponse {
+  operationId: string;
+  status: CustomerExecutionStatus;
+  decision: Decision;
+  reason: string;
+  destinationId: string;
+  action: string;
+  requestFingerprintProfile: "allowly.execution.request.v1";
+  requestFingerprint: string;
+  requestDescriptor: CustomerExecutionRequestDescriptor;
+  decisionReceipt: ReceiptEnvelope;
+  executionMode: "customer_sdk";
+  effectiveEvidenceMode: CustomerEvidenceMode;
+  decisionState: "allowed" | "not_allowed";
+  targetState: "not_started" | "response_observed" | "unknown";
+  evidenceState:
+    | "pending"
+    | "customer_reported"
+    | "customer_held_witness_bundle"
+    | "evidence_gap";
+  approval: Record<string, unknown> | null;
+  approvalSha256: string | null;
+  approvalExpiresAt: string | null;
+  witnessSession: CustomerExecutionWitnessSession | null;
+  downstream: CustomerExecutionDownstream | null;
+  outcomeEvidence: OutcomeEvidence | null;
+  confirmNonce?: string | null;
+  confirmExpiresAt?: string | null;
+  confirmPromptHint?: string | null;
+  escalationId?: string | null;
+  escalationExpiresAt?: string | null;
+  escalationTo?: string | null;
+  escalation?: EscalationInfo | null;
+}
+
+export interface ClaimExecutionDispatchRequest {
+  operationId: string;
+  approvalSha256: string;
+  agentToken?: string;
+}
+
+export interface ClaimExecutionDispatchResponse {
+  operationId: string;
+  dispatchState: "claimed";
+  approval: Record<string, unknown>;
+  approvalSha256: string;
+  approvalExpiresAt: string;
+  effectiveEvidenceMode: CustomerEvidenceMode;
+}
+
+export interface GetExecutionWitnessTokenRequest {
+  operationId: string;
+  approvalSha256: string;
+  agentToken?: string;
+}
+
+export interface ExecutionWitnessTokenResponse {
+  sessionId: string;
+  workspaceId: string;
+  approvalSha256: string;
+  witnessUrl: string;
+  admissionToken: string;
+  expiresAt: string;
+  trustedNotaryKeyFingerprintSha256: string;
+  nativeProfile: "customer_held_tlsn_bundle_v1";
+}
+
+export interface CustomerExecutionOutcome {
+  approvalSha256: string;
+  targetState: "response_observed" | "unknown";
+  dispatchStartedAt: Date | string;
+  completedAt: Date | string;
+  httpStatus?: number;
+  responseSha256?: string;
+  responseSize?: number;
+  providerOperationId?: string;
+  evidenceBundleSha256?: string;
+  notaryAttestation?: Record<string, unknown>;
+}
+
+export interface ReportExecutionOutcomeRequest extends CustomerExecutionOutcome {
+  operationId: string;
+  idempotencyKey: string;
+  agentToken?: string;
+}
+
+export interface CustomerHttpOptions {
+  operationId: string;
+  authorizationId: string;
+  enabledExecutableId: string;
+  catalogOperationId: string;
+  action: string;
+  evidenceMode?: CustomerEvidenceMode;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers?: Record<string, string>;
+  body?: string;
+  policyInput?: CustomerPolicyInput;
+  clientTimestamp?: Date | string;
+  idempotencyKey?: string;
+  outcomeIdempotencyKey?: string;
+  agentToken?: string;
+  journalDirectory: string;
+  /** Provider timeout. Also bounds native execution unless witness.timeoutMs is set. */
+  timeoutMs?: number;
+  witness?: {
+    nativeBinaryPath: string;
+    trustedNotaryKeyPath: string;
+    evidenceDirectory: string;
+    workspaceId: string;
+    timeoutMs?: number;
+  };
+}
+
+export interface CustomerExecutionEvidencePackage {
+  profile: "allowly.customer_execution.evidence.v1";
+  operationId: string;
+  approval: Record<string, unknown>;
+  approvalSha256: string;
+  decisionReceipt: ReceiptEnvelope;
+  decisionReceiptVerification: "pending" | "not_verified" | "verified";
+  requestDescriptor: CustomerExecutionRequestDescriptor;
+  outcome: CustomerExecutionOutcome | null;
+  witness:
+    | {
+      profile: "customer_held_tlsn_bundle_v1";
+      evidencePath: string;
+      attestationPath: string;
+      trustedNotaryKeyPath: string;
+    }
+    | null;
+}
+
+export type CustomerHttpExecutionResult =
+  | {
+    state: "not_allowed";
+    authorization: CustomerExecutionResponse;
+  }
+  | {
+    state: "response_observed";
+    authorization: CustomerExecutionResponse;
+    response: CustomerExecutionResponse;
+    evidencePackage: CustomerExecutionEvidencePackage;
+  }
+  | {
+    state: "unknown";
+    authorization: CustomerExecutionResponse;
+    response: CustomerExecutionResponse | null;
+    evidencePackage: CustomerExecutionEvidencePackage;
+  };
+
+export interface ResumeHttpExecutionRequest {
+  operationId: string;
+  journalDirectory: string;
+  agentToken?: string;
+}
+
 export interface ReceiptAcknowledgmentRequest {
   receiptId: string;
   receiptSha256: string;
@@ -236,6 +474,17 @@ export interface CheckResponse {
 export interface ActionEntry {
   name: string;
   constraints?: Record<string, unknown>;
+  /** Exact executable operations granted to this action. Empty means none. */
+  executableOperations?: ExecutableOperationGrant[];
+}
+
+export interface ExecutableOperationGrant {
+  enabledExecutableId: string;
+  providerId: string;
+  operationId: string;
+  catalogRevision: string;
+  definitionFingerprint: string;
+  minimumEvidenceMode: CustomerEvidenceMode;
 }
 
 interface AuthorizationCreateBase {

@@ -889,6 +889,49 @@ describe("Allowly.authorizations.create", () => {
     expect(res.requiresConfirmFor).toEqual(["email.send"]);
   });
 
+  it("serializes exact executable grants on inline actions without widening empty grants", async () => {
+    const fetch = makeFetch(201, {
+      authorization_id: "auth_new",
+      created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z",
+      ...AUTHORIZATION_RULE_FIELDS,
+      receipt: PENDING_RECEIPT,
+    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await client.authorizations.create({
+      userId: "u1",
+      agentId: "a1",
+      actions: [
+        {
+          name: "greenhouse.candidates.update",
+          executableOperations: [{
+            enabledExecutableId: "exe_1",
+            providerId: "greenhouse",
+            operationId: "greenhouse.candidates.update",
+            catalogRevision: "2026-09-27.1",
+            definitionFingerprint: "sha256:" + "1".repeat(64),
+            minimumEvidenceMode: "receipt",
+          }],
+        },
+        { name: "email.read", executableOperations: [] },
+      ],
+      expiresAt: "2026-12-31T00:00:00Z",
+    });
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.actions[0].executable_operations).toEqual([{
+      enabled_executable_id: "exe_1",
+      provider_id: "greenhouse",
+      operation_id: "greenhouse.candidates.update",
+      catalog_revision: "2026-09-27.1",
+      definition_fingerprint: "sha256:" + "1".repeat(64),
+      minimum_evidence_mode: "receipt",
+    }]);
+    expect(body.actions[1]).not.toHaveProperty("executable_operations");
+  });
+
   it("exposes the billing-warning header on create", async () => {
     const fetch = makeFetch(
       201,
@@ -1714,6 +1757,21 @@ describe("Allowly identity and governed execution", () => {
     });
     expect(body).not.toHaveProperty("resource");
     expect(body).not.toHaveProperty("context");
+  });
+
+  it("does not accept a customer-local approval through managed execute", async () => {
+    const fetch = makeFetch(201, { ...EXECUTION_RESPONSE, execution_mode: "customer_sdk" });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+
+    await expect(client.execute({
+      operationId: "op_1",
+      authorizationId: "auth_1",
+      destinationId: "dst_1",
+      payload: {},
+      clientTimestamp: "2026-09-24T20:01:02Z",
+      idempotencyKey: "idem_1",
+    })).rejects.toThrow("managed execute received a customer_sdk response");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("keeps explicit unavailable downstream and evidence state", async () => {

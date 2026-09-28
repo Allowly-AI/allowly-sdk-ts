@@ -1,5 +1,9 @@
 export { Allowly, AllowlyTransportError } from "./client.js";
 export { SealWebhookClient } from "./seal-webhook.js";
+export {
+  commitCustomerHttpRequest,
+  completeCustomerExecutionEvidence,
+} from "./customer-execution.js";
 export { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
 export * as identifiers from "./identifiers.js";
 export * from "./verify.js";
@@ -8,6 +12,26 @@ export type {
   BudgetInfo,
   BudgetSettlementResponse,
   ExecuteRequest,
+  PrepareExecutionRequest,
+  CustomerEvidenceMode,
+  CustomerHeaderCommitment,
+  CustomerHttpRequestCommitment,
+  CustomerPolicyInput,
+  CustomerExecutionRequestDescriptor,
+  CustomerExecutionWitnessSession,
+  CustomerExecutionDownstream,
+  CustomerExecutionStatus,
+  CustomerExecutionResponse,
+  ClaimExecutionDispatchRequest,
+  ClaimExecutionDispatchResponse,
+  GetExecutionWitnessTokenRequest,
+  ExecutionWitnessTokenResponse,
+  CustomerExecutionOutcome,
+  ReportExecutionOutcomeRequest,
+  CustomerHttpOptions,
+  CustomerExecutionEvidencePackage,
+  CustomerHttpExecutionResult,
+  ResumeHttpExecutionRequest,
   ExecutionDownstream,
   ExecutionRequestDescriptor,
   ExecutionResponse,
@@ -40,5 +64,6 @@ export type {
   Decision,
   FallbackMode,
   ActionEntry,
+  ExecutableOperationGrant,
   AllowlyError,
 } from "./types.js";

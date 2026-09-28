@@ -24,6 +24,16 @@ import type {
   EscalationResolveRequest,
   EscalationResolveResponse,
   ExecuteRequest,
+  PrepareExecutionRequest,
+  CustomerExecutionResponse,
+  ClaimExecutionDispatchRequest,
+  ClaimExecutionDispatchResponse,
+  GetExecutionWitnessTokenRequest,
+  ExecutionWitnessTokenResponse,
+  ReportExecutionOutcomeRequest,
+  CustomerHttpOptions,
+  CustomerHttpExecutionResult,
+  ResumeHttpExecutionRequest,
   ExecutionDownstream,
   ExecutionRequestDescriptor,
   ExecutionResponse,
@@ -36,6 +46,10 @@ import type {
   SealRequest,
   SealResponse,
 } from "./types.js";
+import {
+  executeHttp as executeCustomerHttp,
+  resumeHttpExecution as resumeCustomerHttpExecution,
+} from "./customer-execution.js";
 
 const DEFAULT_BASE_URL = "https://api.allowly.ai";
 const DEFAULT_CHECK_TIMEOUT_MS = 1000;
@@ -395,6 +409,11 @@ export class Allowly {
         expectedStatus: [200, 201],
       },
     );
+    if (raw.execution_mode === "customer_sdk") {
+      throw new AllowlyProtocolError(
+        "managed execute received a customer_sdk response; use executeHttp or prepareExecution",
+      );
+    }
     const response = parseExecutionResponse(raw);
     if (response.operationId !== req.operationId
         || response.destinationId !== req.destinationId
@@ -404,17 +423,137 @@ export class Allowly {
     return response;
   }
 
+  /** Prepare a customer-local HTTP execution without sending private bytes. */
+  async prepareExecution(req: PrepareExecutionRequest): Promise<CustomerExecutionResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      "/v1/execute",
+      {
+        mode: "customer_sdk",
+        operation_id: req.operationId,
+        authorization_id: req.authorizationId,
+        enabled_executable_id: req.enabledExecutableId,
+        catalog_operation_id: req.catalogOperationId,
+        action: req.action,
+        evidence_mode: req.evidenceMode,
+        http_request: serializeCustomerHttpCommitment(req.httpRequest),
+        policy_input: {
+          resource: req.policyInput?.resource ?? null,
+          context: req.policyInput?.context ?? {},
+          estimated_cost_micros: req.policyInput?.estimatedCostMicros ?? null,
+        },
+        client_timestamp: clientTimestamp(req.clientTimestamp),
+      },
+      {
+        headers: await this.identityHeaders(req.agentToken, req.idempotencyKey),
+        expectedStatus: [200, 201],
+      },
+    );
+    const response = parseCustomerExecutionResponse(raw);
+    if (response.operationId !== req.operationId
+        || response.destinationId !== req.enabledExecutableId
+        || response.requestDescriptor.authorizationId !== req.authorizationId
+        || response.requestDescriptor.action !== req.action) {
+      throw new AllowlyProtocolError("customer execution response does not match the request");
+    }
+    return response;
+  }
+
+  async claimExecutionDispatch(
+    req: ClaimExecutionDispatchRequest,
+  ): Promise<ClaimExecutionDispatchResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      `/v1/executions/${encodeURIComponent(req.operationId)}/dispatch`,
+      { approval_sha256: req.approvalSha256 },
+      { headers: await this.identityHeaders(req.agentToken) },
+    );
+    return parseDispatchResponse(raw, req.operationId, req.approvalSha256);
+  }
+
+  async getExecutionWitnessToken(
+    req: GetExecutionWitnessTokenRequest,
+  ): Promise<ExecutionWitnessTokenResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      `/v1/executions/${encodeURIComponent(req.operationId)}/witness-session-token`,
+      { approval_sha256: req.approvalSha256 },
+      { headers: await this.identityHeaders(req.agentToken) },
+    );
+    return parseWitnessTokenResponse(raw, req.approvalSha256);
+  }
+
+  async reportExecutionOutcome(
+    req: ReportExecutionOutcomeRequest,
+  ): Promise<CustomerExecutionResponse> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      `/v1/executions/${encodeURIComponent(req.operationId)}/outcome`,
+      {
+        approval_sha256: req.approvalSha256,
+        target_state: req.targetState,
+        dispatch_started_at: clientTimestamp(req.dispatchStartedAt),
+        completed_at: clientTimestamp(req.completedAt),
+        ...(req.httpStatus !== undefined ? { http_status: req.httpStatus } : {}),
+        ...(req.responseSha256 !== undefined ? { response_sha256: req.responseSha256 } : {}),
+        ...(req.responseSize !== undefined ? { response_size: req.responseSize } : {}),
+        ...(req.providerOperationId !== undefined
+          ? { provider_operation_id: req.providerOperationId }
+          : {}),
+        ...(req.evidenceBundleSha256 !== undefined
+          ? { evidence_bundle_sha256: req.evidenceBundleSha256 }
+          : {}),
+        ...(req.notaryAttestation !== undefined
+          ? { notary_attestation: req.notaryAttestation }
+          : {}),
+      },
+      {
+        headers: await this.identityHeaders(req.agentToken, req.idempotencyKey),
+        expectedStatus: [200, 201],
+      },
+    );
+    const response = parseCustomerExecutionResponse(raw);
+    if (response.operationId !== req.operationId
+        || response.approvalSha256 !== req.approvalSha256) {
+      throw new AllowlyProtocolError("customer execution outcome does not match the request");
+    }
+    return response;
+  }
+
+  async executeHttp(
+    url: string | URL,
+    options: CustomerHttpOptions,
+  ): Promise<CustomerHttpExecutionResult> {
+    return executeCustomerHttp(this, url, options);
+  }
+
+  async resumeHttpExecution(
+    req: ResumeHttpExecutionRequest,
+  ): Promise<CustomerHttpExecutionResult> {
+    return resumeCustomerHttpExecution(this, req);
+  }
+
   async getExecution(
     operationId: string,
-    opts: { agentToken?: string } = {},
-  ): Promise<ExecutionResponse> {
+    opts?: { agentToken?: string },
+  ): Promise<ExecutionResponse>;
+  async getExecution(
+    operationId: string,
+    opts: { agentToken?: string; mode: "customer_sdk" },
+  ): Promise<CustomerExecutionResponse>;
+  async getExecution(
+    operationId: string,
+    opts: { agentToken?: string; mode?: "customer_sdk" } = {},
+  ): Promise<ExecutionResponse | CustomerExecutionResponse> {
     const raw = await this.request<Record<string, unknown>>(
       "GET",
       `/v1/executions/${encodeURIComponent(operationId)}`,
       undefined,
       { headers: await this.identityHeaders(opts.agentToken) },
     );
-    const response = parseExecutionResponse(raw);
+    const response = opts.mode === "customer_sdk"
+      ? parseCustomerExecutionResponse(raw)
+      : parseExecutionResponse(raw);
     if (response.operationId !== operationId) {
       throw new AllowlyProtocolError("execution response does not match the requested operation");
     }
@@ -526,7 +665,22 @@ class AuthorizationsResource {
     const actions = req.actions?.map((s) =>
       typeof s === "string"
         ? { name: s, constraints: {} }
-        : { name: s.name, constraints: s.constraints ?? {} }
+        : {
+          name: s.name,
+          constraints: s.constraints ?? {},
+          ...(s.executableOperations !== undefined && s.executableOperations.length > 0
+            ? {
+              executable_operations: s.executableOperations.map((grant) => ({
+                enabled_executable_id: grant.enabledExecutableId,
+                provider_id: grant.providerId,
+                operation_id: grant.operationId,
+                catalog_revision: grant.catalogRevision,
+                definition_fingerprint: grant.definitionFingerprint,
+                minimum_evidence_mode: grant.minimumEvidenceMode,
+              })),
+            }
+            : {}),
+        }
     );
     const inlineDecisionOverrides = req.policyId === undefined
       ? {
@@ -1189,6 +1343,238 @@ function parseExecutionResponse(value: unknown): ExecutionResponse {
     escalationExpiresAt: optionalString(raw, "escalation_expires_at"),
     escalationTo: optionalString(raw, "escalation_to"),
     escalation: parseEscalationInfo(raw.escalation),
+  };
+}
+
+function serializeCustomerHttpCommitment(
+  value: import("./types.js").CustomerHttpRequestCommitment,
+): Record<string, unknown> {
+  return {
+    method: value.method,
+    origin: value.origin,
+    path: value.path,
+    query: value.query,
+    headers: value.headers.map((header) => ({
+      name: header.name,
+      value_sha256: header.valueSha256,
+    })),
+    body_sha256: value.bodySha256,
+    body_size: value.bodySize,
+    content_type: value.contentType,
+  };
+}
+
+function parseHeaderCommitments(value: unknown): import("./types.js").CustomerHeaderCommitment[] {
+  if (!Array.isArray(value)) {
+    throw new AllowlyProtocolError("customer request headers must be an array");
+  }
+  return value.map((item) => {
+    const raw = requireRecord(item, "customer request header");
+    return {
+      name: requireString(raw, "name"),
+      valueSha256: requireString(raw, "value_sha256"),
+    };
+  });
+}
+
+function parseCustomerExecutionResponse(value: unknown): CustomerExecutionResponse {
+  const raw = requireRecord(value, "customer execution response");
+  const operationId = requireString(raw, "operation_id");
+  const destinationId = requireString(raw, "destination_id");
+  const action = requireString(raw, "action");
+  const status = requireString(raw, "status");
+  const statuses: import("./types.js").CustomerExecutionStatus[] = [
+    "denied",
+    "confirmation_required",
+    "escalation_required",
+    "approved",
+    "succeeded",
+    "failed",
+    "unknown",
+  ];
+  if (!statuses.includes(status as import("./types.js").CustomerExecutionStatus)) {
+    throw new AllowlyProtocolError(`invalid customer execution status: ${JSON.stringify(status)}`);
+  }
+  const decision = requireString(raw, "decision");
+  if (!["allow", "deny", "confirm", "escalate"].includes(decision)) {
+    throw new AllowlyProtocolError(`invalid customer execution decision: ${JSON.stringify(decision)}`);
+  }
+  if (requireString(raw, "execution_mode") !== "customer_sdk") {
+    throw new AllowlyProtocolError("customer execution response has the wrong execution_mode");
+  }
+  const requestFingerprintProfile = requireString(raw, "request_fingerprint_profile");
+  if (requestFingerprintProfile !== "allowly.execution.request.v1") {
+    throw new AllowlyProtocolError("customer execution fingerprint profile is unsupported");
+  }
+  const descriptorRaw = requireRecord(raw.request_descriptor, "customer request descriptor");
+  const requestDescriptor: import("./types.js").CustomerExecutionRequestDescriptor = {
+    operationId: requireString(descriptorRaw, "operation_id"),
+    authorizationId: requireString(descriptorRaw, "authorization_id"),
+    destinationId: requireString(descriptorRaw, "destination_id"),
+    action: requireString(descriptorRaw, "action"),
+    method: requireString(descriptorRaw, "method"),
+    origin: requireString(descriptorRaw, "origin"),
+    path: requireString(descriptorRaw, "path"),
+    query: requireString(descriptorRaw, "query"),
+    headers: parseHeaderCommitments(descriptorRaw.headers),
+    bodySha256: requireString(descriptorRaw, "body_sha256"),
+    bodySize: requireNumber(descriptorRaw, "body_size"),
+    contentType: optionalString(descriptorRaw, "content_type"),
+  };
+  if (requestDescriptor.operationId !== operationId
+      || requestDescriptor.destinationId !== destinationId
+      || requestDescriptor.action !== action) {
+    throw new AllowlyProtocolError("customer request descriptor does not match the response");
+  }
+  const effectiveEvidenceMode = requireString(raw, "effective_evidence_mode");
+  if (effectiveEvidenceMode !== "receipt" && effectiveEvidenceMode !== "witnessed") {
+    throw new AllowlyProtocolError("invalid effective_evidence_mode");
+  }
+  const decisionState = requireString(raw, "decision_state");
+  if (decisionState !== "allowed" && decisionState !== "not_allowed") {
+    throw new AllowlyProtocolError("invalid customer execution decision_state");
+  }
+  const targetState = requireString(raw, "target_state");
+  if (!["not_started", "response_observed", "unknown"].includes(targetState)) {
+    throw new AllowlyProtocolError("invalid customer execution target_state");
+  }
+  const evidenceState = requireString(raw, "evidence_state");
+  if (!["pending", "customer_reported", "customer_held_witness_bundle", "evidence_gap"]
+    .includes(evidenceState)) {
+    throw new AllowlyProtocolError("invalid customer execution evidence_state");
+  }
+  let witnessSession: import("./types.js").CustomerExecutionWitnessSession | null = null;
+  if (raw.witness_session !== undefined && raw.witness_session !== null) {
+    const session = requireRecord(raw.witness_session, "customer witness session");
+    const profile = requireString(session, "native_profile");
+    const delivery = requireString(session, "admission_token_delivery");
+    if (profile !== "customer_held_tlsn_bundle_v1"
+        || delivery !== "separate_one_time_endpoint") {
+      throw new AllowlyProtocolError("unsupported customer witness session");
+    }
+    witnessSession = {
+      sessionId: requireString(session, "session_id"),
+      witnessUrl: requireString(session, "witness_url"),
+      expiresAt: requireString(session, "expires_at"),
+      trustedNotaryKeyFingerprintSha256: requireString(
+        session,
+        "trusted_notary_key_fingerprint_sha256",
+      ),
+      nativeProfile: "customer_held_tlsn_bundle_v1",
+      admissionTokenDelivery: "separate_one_time_endpoint",
+    };
+  }
+  let downstream: import("./types.js").CustomerExecutionDownstream | null = null;
+  if (raw.downstream !== undefined && raw.downstream !== null) {
+    const item = requireRecord(raw.downstream, "customer execution downstream");
+    if (requireString(item, "source") !== "customer_runtime") {
+      throw new AllowlyProtocolError("customer execution downstream source is invalid");
+    }
+    const httpStatus = optionalNumber(item, "http_status");
+    const responseFingerprint = optionalString(item, "response_fingerprint");
+    const scope = requireString(item, "response_fingerprint_scope");
+    if (scope !== "complete" && scope !== "unavailable") {
+      throw new AllowlyProtocolError("customer downstream fingerprint scope is invalid");
+    }
+    const resultError = item.result_error ?? null;
+    if (![null, "response_not_json", "response_mapping_failed"].includes(resultError as any)) {
+      throw new AllowlyProtocolError("customer downstream result_error is invalid");
+    }
+    const businessCompletion = item.business_completion ?? null;
+    if (businessCompletion !== null && businessCompletion !== "not_verified") {
+      throw new AllowlyProtocolError("customer downstream business_completion is invalid");
+    }
+    downstream = {
+      source: "customer_runtime",
+      httpStatus,
+      responseFingerprint,
+      responseFingerprintScope: scope,
+      result: requireRecord(item.result, "customer execution downstream result"),
+      resultError: resultError as import("./types.js").CustomerExecutionDownstream["resultError"],
+      businessCompletion,
+    };
+  }
+  const approval = raw.approval === undefined || raw.approval === null
+    ? null
+    : requireRecord(raw.approval, "customer execution approval");
+  return {
+    operationId,
+    status: status as import("./types.js").CustomerExecutionStatus,
+    decision: decision as CustomerExecutionResponse["decision"],
+    reason: requireString(raw, "reason"),
+    destinationId,
+    action,
+    requestFingerprintProfile,
+    requestFingerprint: requireString(raw, "request_fingerprint"),
+    requestDescriptor,
+    decisionReceipt: parseReceiptEnvelope(raw.decision_receipt),
+    executionMode: "customer_sdk",
+    effectiveEvidenceMode,
+    decisionState,
+    targetState: targetState as CustomerExecutionResponse["targetState"],
+    evidenceState: evidenceState as CustomerExecutionResponse["evidenceState"],
+    approval,
+    approvalSha256: optionalString(raw, "approval_sha256"),
+    approvalExpiresAt: optionalString(raw, "approval_expires_at"),
+    witnessSession,
+    downstream,
+    outcomeEvidence: raw.outcome_evidence === undefined || raw.outcome_evidence === null
+      ? null
+      : parseOutcomeEvidence(raw.outcome_evidence),
+    confirmNonce: optionalString(raw, "confirm_nonce"),
+    confirmExpiresAt: optionalString(raw, "confirm_expires_at"),
+    confirmPromptHint: optionalString(raw, "confirm_prompt_hint"),
+    escalationId: optionalString(raw, "escalation_id"),
+    escalationExpiresAt: optionalString(raw, "escalation_expires_at"),
+    escalationTo: optionalString(raw, "escalation_to"),
+    escalation: parseEscalationInfo(raw.escalation),
+  };
+}
+
+function parseDispatchResponse(
+  value: unknown,
+  operationId: string,
+  approvalSha256: string,
+): ClaimExecutionDispatchResponse {
+  const raw = requireRecord(value, "dispatch response");
+  const mode = requireString(raw, "effective_evidence_mode");
+  if (requireString(raw, "operation_id") !== operationId
+      || requireString(raw, "approval_sha256") !== approvalSha256
+      || requireString(raw, "dispatch_state") !== "claimed"
+      || (mode !== "receipt" && mode !== "witnessed")) {
+    throw new AllowlyProtocolError("dispatch response does not match the request");
+  }
+  return {
+    operationId,
+    dispatchState: "claimed",
+    approval: requireRecord(raw.approval, "dispatch approval"),
+    approvalSha256,
+    approvalExpiresAt: requireString(raw, "approval_expires_at"),
+    effectiveEvidenceMode: mode,
+  };
+}
+
+function parseWitnessTokenResponse(
+  value: unknown,
+  approvalSha256: string,
+): ExecutionWitnessTokenResponse {
+  const raw = requireRecord(value, "witness token response");
+  if (requireString(raw, "approval_sha256") !== approvalSha256
+      || requireString(raw, "native_profile") !== "customer_held_tlsn_bundle_v1") {
+    throw new AllowlyProtocolError("witness token response does not match the approval");
+  }
+  return {
+    sessionId: requireString(raw, "session_id"),
+    workspaceId: requireString(raw, "workspace_id"),
+    approvalSha256,
+    witnessUrl: requireString(raw, "witness_url"),
+    admissionToken: requireString(raw, "admission_token"),
+    expiresAt: requireString(raw, "expires_at"),
+    trustedNotaryKeyFingerprintSha256: requireString(
+      raw,
+      "trusted_notary_key_fingerprint_sha256",
+    ),
+    nativeProfile: "customer_held_tlsn_bundle_v1",
   };
 }
 
