@@ -409,7 +409,6 @@ export class Allowly {
       "POST",
       "/v1/execute",
       {
-        mode: "customer_sdk",
         operation_id: req.operationId,
         authorization_id: req.authorizationId,
         enabled_executable_id: req.enabledExecutableId,
@@ -1304,9 +1303,6 @@ function parseHeaderCommitments(value: unknown): import("./types.js").CustomerHe
 
 function parseCustomerExecutionResponse(value: unknown): CustomerExecutionResponse {
   const raw = requireRecord(value, "customer execution response");
-  if (raw.execution_mode !== "customer_sdk") {
-    throw new AllowlyProtocolError("execution response must use customer_sdk mode");
-  }
   const operationId = requireString(raw, "operation_id");
   const destinationId = requireString(raw, "destination_id");
   const action = requireString(raw, "action");
@@ -1326,9 +1322,6 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
   const decision = requireString(raw, "decision");
   if (!["allow", "deny", "confirm", "escalate"].includes(decision)) {
     throw new AllowlyProtocolError(`invalid customer execution decision: ${JSON.stringify(decision)}`);
-  }
-  if (requireString(raw, "execution_mode") !== "customer_sdk") {
-    throw new AllowlyProtocolError("customer execution response has the wrong execution_mode");
   }
   const requestFingerprintProfile = requireString(raw, "request_fingerprint_profile");
   if (requestFingerprintProfile !== "allowly.execution.request.v1") {
@@ -1404,12 +1397,7 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
     if (scope !== "complete" && scope !== "unavailable") {
       throw new AllowlyProtocolError("customer downstream fingerprint scope is invalid");
     }
-    const resultError = item.result_error ?? null;
-    if (![null, "response_not_json", "response_mapping_failed"].includes(resultError as any)) {
-      throw new AllowlyProtocolError("customer downstream result_error is invalid");
-    }
-    const businessCompletion = item.business_completion ?? null;
-    if (businessCompletion !== null && businessCompletion !== "not_verified") {
+    if (item.business_completion !== "not_verified") {
       throw new AllowlyProtocolError("customer downstream business_completion is invalid");
     }
     downstream = {
@@ -1418,8 +1406,7 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
       responseFingerprint,
       responseFingerprintScope: scope,
       result: requireRecord(item.result, "customer execution downstream result"),
-      resultError: resultError as import("./types.js").CustomerExecutionDownstream["resultError"],
-      businessCompletion,
+      businessCompletion: "not_verified",
     };
   }
   const approval = raw.approval === undefined || raw.approval === null
@@ -1436,7 +1423,6 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
     requestFingerprint: requireString(raw, "request_fingerprint"),
     requestDescriptor,
     decisionReceipt: parseReceiptEnvelope(raw.decision_receipt),
-    executionMode: "customer_sdk",
     effectiveEvidenceMode,
     decisionState,
     targetState: targetState as CustomerExecutionResponse["targetState"],

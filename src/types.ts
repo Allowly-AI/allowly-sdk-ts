@@ -207,8 +207,7 @@ export interface CustomerExecutionDownstream {
   responseFingerprint: string | null;
   responseFingerprintScope: "complete" | "unavailable";
   result: Record<string, unknown>;
-  resultError: "response_not_json" | "response_mapping_failed" | null;
-  businessCompletion: "not_verified" | null;
+  businessCompletion: "not_verified";
 }
 
 export type CustomerExecutionStatus =
@@ -231,7 +230,6 @@ export interface CustomerExecutionResponse {
   requestFingerprint: string;
   requestDescriptor: CustomerExecutionRequestDescriptor;
   decisionReceipt: ReceiptEnvelope;
-  executionMode: "customer_sdk";
   effectiveEvidenceMode: CustomerEvidenceMode;
   decisionState: "allowed" | "not_allowed";
   targetState: "not_started" | "response_observed" | "unknown";

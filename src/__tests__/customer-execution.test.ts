@@ -127,7 +127,6 @@ function preparedResponse(overrides: Record<string, unknown> = {}) {
       content_type: commitment.contentType,
     },
     decision_receipt: pendingReceipt(),
-    execution_mode: "customer_sdk",
     effective_evidence_mode: "receipt",
     approval,
     approval_sha256: approvalSha256,
@@ -163,7 +162,6 @@ function finalResponse(prepared = preparedResponse(), target: "response_observed
         response_fingerprint: "sha256:" + "2".repeat(64),
         response_fingerprint_scope: "complete",
         result: {},
-        result_error: null,
         business_completion: "not_verified",
       }
       : {
@@ -172,7 +170,6 @@ function finalResponse(prepared = preparedResponse(), target: "response_observed
         response_fingerprint: null,
         response_fingerprint_scope: "unavailable",
         result: {},
-        result_error: null,
         business_completion: "not_verified",
       },
   };
@@ -390,16 +387,22 @@ describe("customer-local HTTP execution", () => {
     });
     await expect(client.getExecution("op_customer_1")).resolves.toMatchObject({
       operationId: "op_customer_1",
-      executionMode: "customer_sdk",
     });
 
-    const hosted = new Allowly({
+  });
+
+  it.each([undefined, null, "complete"])("rejects invalid downstream completion %s", async (value) => {
+    const response = finalResponse();
+    const downstream = response.downstream as Record<string, unknown>;
+    downstream.business_completion = value;
+    const client = new Allowly({
       apiKey: "test-key",
       baseUrl: "https://api.example.com",
-      fetch: fetchSequence(jsonResponse(200, { ...response, execution_mode: "managed_gateway" })),
+      fetch: fetchSequence(jsonResponse(200, response)),
     });
-    await expect(hosted.getExecution("op_customer_1"))
-      .rejects.toThrow("execution response must use customer_sdk mode");
+    await expect(client.getExecution("op_customer_1")).rejects.toThrow(
+      "customer downstream business_completion is invalid",
+    );
   });
 
   it("commits exact lowercase header names and UTF-8 bytes", () => {
