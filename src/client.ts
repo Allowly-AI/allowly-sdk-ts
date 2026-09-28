@@ -9,6 +9,9 @@ import {
 } from "./verify.js";
 import type {
   AllowlyOptions,
+  CustomExecutableCreateRequest,
+  EnabledExecutableResponse,
+  ExecutableEvidenceCapability,
   CheckResponse,
   FallbackMode,
   AuthorizationCreateRequest,
@@ -224,6 +227,18 @@ export class Allowly {
     }
 
     return { data: json as T, headers: res.headers };
+  }
+
+  /** Create one immutable, customer-defined operation with a setup credential. */
+  async createCustomExecutable(req: CustomExecutableCreateRequest): Promise<EnabledExecutableResponse> {
+    const raw = await this.request<unknown>("POST", "/v1/setup/custom-executables", {
+      name: req.name,
+      url: req.url,
+      method: req.method,
+      request_content_type: req.requestContentType ?? null,
+      required_headers: req.requiredHeaders ?? [],
+    }, { expectedStatus: 201 });
+    return parseCustomExecutableResponse(raw);
   }
 
   async check(req: {
@@ -914,6 +929,75 @@ class ReceiptsResource {
     }
     throw new Error(`Receipt ${receiptId} not signed after ${timeoutSeconds}s`);
   }
+}
+
+function parseCustomExecutableResponse(value: unknown): EnabledExecutableResponse {
+  const raw = requireRecord(value, "enabled executable");
+  const flag = (record: Record<string, unknown>, key: string): boolean => {
+    if (typeof record[key] !== "boolean") throw new AllowlyProtocolError(`${key} must be a boolean`);
+    return record[key];
+  };
+  const capability = (value: unknown, source: ExecutableEvidenceCapability["evidenceSource"]): ExecutableEvidenceCapability => {
+    const record = requireRecord(value, "executable evidence capability");
+    if (record.evidence_source !== source) throw new AllowlyProtocolError("invalid executable evidence source");
+    return {
+      available: flag(record, "available"),
+      evidenceSource: source,
+      profile: optionalString(record, "profile"),
+      reason: optionalString(record, "reason"),
+      apiRequestMatchVerification: optionalString(record, "api_request_match_verification"),
+    };
+  };
+  if (raw.credential_location !== "customer_runtime" || raw.connection_status !== "not_verified") {
+    throw new AllowlyProtocolError("invalid executable credential location or connection status");
+  }
+  if (!Array.isArray(raw.operations) || raw.operations.length !== 1 || raw.operation_count !== 1) {
+    throw new AllowlyProtocolError("a custom executable must contain exactly one operation");
+  }
+  const providerId = requireString(raw, "provider_id");
+  const operations = raw.operations.map((value) => {
+    const operation = requireRecord(value, "executable operation");
+    const capabilities = requireRecord(operation.capabilities, "executable capabilities");
+    const fingerprint = requireString(operation, "definition_fingerprint");
+    if (operation.provider_id !== providerId || !/^sha256:[0-9a-f]{64}$/.test(fingerprint)) {
+      throw new AllowlyProtocolError("invalid executable operation identity or fingerprint");
+    }
+    return {
+      providerId,
+      operationId: requireString(operation, "operation_id"),
+      label: requireString(operation, "label"),
+      method: requireString(operation, "method"),
+      path: requireString(operation, "path"),
+      effect: requireString(operation, "effect"),
+      requestContentType: optionalString(operation, "request_content_type"),
+      requiredHeaders: requireStringArray(operation, "required_headers"),
+      status: requireString(operation, "status"),
+      definitionFingerprint: fingerprint,
+      capabilities: {
+        customerReportedReceipt: capability(capabilities.customer_reported_receipt, "customer_reported"),
+        tlsWitness: capability(capabilities.tls_witness, "independent_allowly_witness"),
+      },
+      allowlyLiveTested: flag(operation, "allowly_live_tested"),
+      tlsWitnessTested: flag(operation, "tls_witness_tested"),
+    };
+  });
+  return {
+    enabledExecutableId: requireString(raw, "enabled_executable_id"),
+    providerId,
+    providerName: requireString(raw, "provider_name"),
+    category: requireString(raw, "category"),
+    origin: requireString(raw, "origin"),
+    catalogRevision: requireString(raw, "catalog_revision"),
+    status: requireString(raw, "status"),
+    credentialLocation: "customer_runtime",
+    connectionStatus: "not_verified",
+    allowlyLiveTested: flag(raw, "allowly_live_tested"),
+    tlsWitnessTested: flag(raw, "tls_witness_tested"),
+    operations,
+    operationCount: 1,
+    enabledAt: requireString(raw, "enabled_at"),
+    disabledAt: optionalString(raw, "disabled_at"),
+  };
 }
 
 function parsePendingEnvelope(value: unknown): ReceiptEnvelopePending {

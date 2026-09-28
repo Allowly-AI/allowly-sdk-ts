@@ -9,6 +9,10 @@ export * as identifiers from "./identifiers.js";
 export * from "./verify.js";
 export type {
   AllowlyOptions,
+  CustomExecutableCreateRequest,
+  EnabledExecutableResponse,
+  ExecutableOperation,
+  ExecutableEvidenceCapability,
   BudgetInfo,
   BudgetSettlementResponse,
   ExecuteRequest,

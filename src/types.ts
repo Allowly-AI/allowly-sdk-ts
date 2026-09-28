@@ -1,5 +1,60 @@
 export type Decision = "allow" | "deny" | "confirm" | "escalate";
 export type FallbackMode = "fail_open" | "fail_closed";
+
+export interface CustomExecutableCreateRequest {
+  name: string;
+  /** Exact public HTTPS URL, optionally with whole-segment path placeholders. No credentials or query. */
+  url: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  requestContentType?: "application/json" | "application/x-www-form-urlencoded" | null;
+  /** Header names only; provider credential values stay in the customer runtime. */
+  requiredHeaders?: string[];
+}
+
+export interface ExecutableEvidenceCapability {
+  available: boolean;
+  evidenceSource: "customer_reported" | "independent_allowly_witness";
+  profile: string | null;
+  reason: string | null;
+  apiRequestMatchVerification: string | null;
+}
+
+export interface ExecutableOperation {
+  providerId: string;
+  operationId: string;
+  label: string;
+  method: string;
+  path: string;
+  effect: string;
+  requestContentType: string | null;
+  requiredHeaders: string[];
+  status: string;
+  definitionFingerprint: string;
+  capabilities: {
+    customerReportedReceipt: ExecutableEvidenceCapability;
+    tlsWitness: ExecutableEvidenceCapability;
+  };
+  allowlyLiveTested: boolean;
+  tlsWitnessTested: boolean;
+}
+
+export interface EnabledExecutableResponse {
+  enabledExecutableId: string;
+  providerId: string;
+  providerName: string;
+  category: string;
+  origin: string;
+  catalogRevision: string;
+  status: string;
+  credentialLocation: "customer_runtime";
+  connectionStatus: "not_verified";
+  allowlyLiveTested: boolean;
+  tlsWitnessTested: boolean;
+  operations: ExecutableOperation[];
+  operationCount: number;
+  enabledAt: string;
+  disabledAt: string | null;
+}
 export type SealWebhookStatus = "received" | "signing" | "sealed" | "rejected" | "failed";
 export type ExecutionStatus =
   | "denied"
