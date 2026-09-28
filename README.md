@@ -113,7 +113,7 @@ secrets in the URL, query, or policy input.
 
 ```typescript
 const result = await allowly.executeHttp(
-  "https://harvest.greenhouse.io/v1/candidates/123",
+  "https://harvest.greenhouse.io/v3/candidates/123",
   {
     operationId: "candidate-123-offer-1", // persist and reuse this ID
     authorizationId: "auth_...",

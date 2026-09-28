@@ -27,6 +27,60 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
+      - name: Require public verifier 4.2.0
+        run: |
+          published_version="$(npm view @allowly/verifier@4.2.0 version --registry=https://registry.npmjs.org)"
+          test "$published_version" = "4.2.0"
+      - name: Require registry-backed verifier lock
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+          const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+          const root = lock.packages?.[""];
+          const verifier = lock.packages?.["node_modules/@allowly/verifier"];
+          const fail = (message) => {
+            console.error(message);
+            process.exit(1);
+          };
+
+          if (packageJson.dependencies?.["@allowly/verifier"] !== "^4.2.0") {
+            fail("package.json must require @allowly/verifier ^4.2.0");
+          }
+          if (root?.dependencies?.["@allowly/verifier"] !== "^4.2.0") {
+            fail("package-lock.json root metadata is not synchronized with package.json");
+          }
+          for (const [location, spec] of [
+            ["package.json devDependencies", packageJson.devDependencies?.["@allowly/verifier"]],
+            ["package-lock.json root devDependencies", root?.devDependencies?.["@allowly/verifier"]],
+          ]) {
+            if (typeof spec === "string" && spec.startsWith("file:")) {
+              fail(`${location} still uses the local verifier source`);
+            }
+          }
+          if (Object.keys(lock.packages ?? {}).some((key) =>
+            key.includes("allowly-receipt-format/verifiers/typescript"))) {
+            fail("package-lock.json still contains the local verifier package");
+          }
+          if (!verifier || verifier.link === true || verifier.version !== "4.2.0") {
+            fail("package-lock.json must contain a non-link @allowly/verifier 4.2.0 entry");
+          }
+          if (typeof verifier.resolved !== "string") {
+            fail("the verifier lock entry has no registry tarball URL");
+          }
+          const resolved = new URL(verifier.resolved);
+          if (
+            resolved.protocol !== "https:" ||
+            resolved.hostname !== "registry.npmjs.org" ||
+            !resolved.pathname.endsWith("/verifier-4.2.0.tgz")
+          ) {
+            fail("the verifier lock entry is not backed by the public npm registry");
+          }
+          if (typeof verifier.integrity !== "string" || !verifier.integrity.startsWith("sha512-")) {
+            fail("the verifier lock entry has no tool-generated sha512 integrity");
+          }
+          NODE
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
