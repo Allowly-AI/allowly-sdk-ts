@@ -113,22 +113,20 @@ secrets in the URL, query, or policy input.
 
 ```typescript
 const result = await allowly.executeHttp(
-  "https://harvest.greenhouse.io/v3/candidates/123",
+  "https://harvest.greenhouse.io/v3/candidates?per_page=1&private=false",
   {
-    operationId: "candidate-123-offer-1", // persist and reuse this ID
+    operationId: "greenhouse-candidates-list-page-1", // persist and reuse this ID
     authorizationId: "auth_...",
     enabledExecutableId: "exe_...",
-    catalogOperationId: "greenhouse.candidates.update",
-    action: "greenhouse.candidates.update",
-    method: "PATCH",
+    catalogOperationId: "greenhouse.candidates.list",
+    action: "greenhouse.candidates.list",
+    method: "GET",
     headers: {
-      authorization: `Basic ${process.env.GREENHOUSE_API_TOKEN}`,
-      "content-type": "application/json",
+      authorization: `Bearer ${process.env.GREENHOUSE_ACCESS_TOKEN}`,
     },
-    body: JSON.stringify({ stage: "offer" }),
     policyInput: {
-      resource: "candidate:123",
-      context: { stage: "offer" }, // customer-reported policy input
+      resource: "greenhouse:candidates",
+      context: { pageSize: 1, includePrivate: false }, // customer-reported
     },
     journalDirectory: "/var/lib/my-agent/allowly-executions",
   },
@@ -138,11 +136,18 @@ if (result.state === "not_allowed") return;
 if (result.state === "unknown") {
   // Reconcile the same operation. Never send the provider request again.
   await allowly.resumeHttpExecution({
-    operationId: "candidate-123-offer-1",
+    operationId: "greenhouse-candidates-list-page-1",
     journalDirectory: "/var/lib/my-agent/allowly-executions",
   });
 }
 ```
+
+This uses Greenhouse's documented Harvest v3
+[List candidates](https://harvestdocs.greenhouse.io/reference/get_v3-candidates)
+endpoint with an OAuth
+[Bearer access token](https://harvestdocs.greenhouse.io/docs/authentication). The
+GET has no request body, limits the page to one non-private candidate, and needs
+the `harvest:candidates:list` scope with a Site Admin authorizing user.
 
 The private journal stores request commitments, the approval, and a pending
 outcome upload. It does not store the provider credential or request body. Once

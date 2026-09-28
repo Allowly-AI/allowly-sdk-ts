@@ -1,4 +1,4 @@
-import { Allowly } from "../index.js";
+import { Allowly, commitCustomerHttpRequest } from "../index.js";
 import type {
   ActionEntry,
   ExecuteRequest,
@@ -27,37 +27,44 @@ const client = new Allowly({
   idempotencyKey: "ack-123",
 }) satisfies ReceiptAcknowledgmentRequest;
 
+const greenhouseCandidateListUrl =
+  "https://harvest.greenhouse.io/v3/candidates?per_page=1&private=false";
+const greenhouseCandidateListHeaders = {
+  authorization: "Bearer local-provider-access-token",
+};
+const greenhouseCandidateListCommitment = commitCustomerHttpRequest(
+  greenhouseCandidateListUrl,
+  { method: "GET", headers: greenhouseCandidateListHeaders },
+);
+
 const executableAction = {
-  name: "greenhouse.candidates.update",
+  name: "greenhouse.candidates.list",
   executableOperations: [{
     enabledExecutableId: "exe_123",
-    providerId: "greenhouse",
-    operationId: "greenhouse.candidates.update",
-    catalogRevision: "catalog-2026-09-27",
-    definitionFingerprint: `sha256:${"0".repeat(64)}`,
+    providerId: "greenhouse-harvest",
+    operationId: "greenhouse.candidates.list",
+    catalogRevision:
+      "sha256:b1674bd5fd8889f064ce4fb6b820cffce76e1e449cefa6aefe2802f85639cf6a",
+    definitionFingerprint:
+      "sha256:0d3deed80ddcfd384aefd12d57f800903811b1a6d01d764caf8f24e64de26498",
     minimumEvidenceMode: "receipt",
   }],
 } satisfies ActionEntry;
 
 ({
-  operationId: "candidate-123-offer-1",
+  operationId: "greenhouse-candidates-list-page-1",
   authorizationId: "auth_123",
   enabledExecutableId: "exe_123",
-  catalogOperationId: "greenhouse.candidates.update",
-  action: "greenhouse.candidates.update",
+  catalogOperationId: "greenhouse.candidates.list",
+  action: "greenhouse.candidates.list",
   evidenceMode: "receipt",
-  httpRequest: {
-    method: "PATCH",
-    origin: "https://harvest.greenhouse.io",
-    path: "/v1/candidates/123",
-    query: "",
-    headers: [],
-    bodySha256: `sha256:${"0".repeat(64)}`,
-    bodySize: 0,
-    contentType: null,
+  httpRequest: greenhouseCandidateListCommitment,
+  policyInput: {
+    resource: "greenhouse:candidates",
+    context: { pageSize: 1, includePrivate: false },
   },
   clientTimestamp: new Date(),
-  idempotencyKey: "candidate-123-offer-1",
+  idempotencyKey: "greenhouse-candidates-list-page-1",
 }) satisfies PrepareExecutionRequest;
 
 void client.check({
@@ -78,14 +85,18 @@ void client.execute({
 
 void client.getExecution("order-123", { agentToken: "one-request-token" });
 
-void client.executeHttp("https://harvest.greenhouse.io/v1/candidates/123", {
-  operationId: "candidate-123-offer-1",
+void client.executeHttp(greenhouseCandidateListUrl, {
+  operationId: "greenhouse-candidates-list-page-1",
   authorizationId: "auth_123",
   enabledExecutableId: "exe_123",
-  catalogOperationId: "greenhouse.candidates.update",
-  action: "greenhouse.candidates.update",
-  method: "PATCH",
-  headers: { authorization: "Basic local-provider-credential" },
+  catalogOperationId: "greenhouse.candidates.list",
+  action: "greenhouse.candidates.list",
+  method: "GET",
+  headers: greenhouseCandidateListHeaders,
+  policyInput: {
+    resource: "greenhouse:candidates",
+    context: { pageSize: 1, includePrivate: false },
+  },
   journalDirectory: "/var/lib/my-agent/allowly-executions",
 });
 
