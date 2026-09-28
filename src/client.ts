@@ -26,7 +26,6 @@ import type {
   PolicyEvalInfo,
   EscalationResolveRequest,
   EscalationResolveResponse,
-  ExecuteRequest,
   PrepareExecutionRequest,
   CustomerExecutionResponse,
   ClaimExecutionDispatchRequest,
@@ -37,10 +36,6 @@ import type {
   CustomerHttpOptions,
   CustomerHttpExecutionResult,
   ResumeHttpExecutionRequest,
-  ExecutionDownstream,
-  ExecutionRequestDescriptor,
-  ExecutionResponse,
-  ExecutionStatus,
   OutcomeEvidence,
   ReceiptEnvelope,
   ReceiptEnvelopePending,
@@ -408,36 +403,6 @@ export class Allowly {
     return parseBudgetSettlementResponse(raw);
   }
 
-  async execute(req: ExecuteRequest): Promise<ExecutionResponse> {
-    const raw = await this.request<Record<string, unknown>>(
-      "POST",
-      "/v1/execute",
-      {
-        operation_id: req.operationId,
-        authorization_id: req.authorizationId,
-        destination_id: req.destinationId,
-        payload: req.payload,
-        client_timestamp: clientTimestamp(req.clientTimestamp),
-      },
-      {
-        headers: await this.identityHeaders(req.agentToken, req.idempotencyKey),
-        expectedStatus: [200, 201],
-      },
-    );
-    if (raw.execution_mode === "customer_sdk") {
-      throw new AllowlyProtocolError(
-        "managed execute received a customer_sdk response; use executeHttp or prepareExecution",
-      );
-    }
-    const response = parseExecutionResponse(raw);
-    if (response.operationId !== req.operationId
-        || response.destinationId !== req.destinationId
-        || response.requestDescriptor.authorizationId !== req.authorizationId) {
-      throw new AllowlyProtocolError("execution response does not match the requested operation");
-    }
-    return response;
-  }
-
   /** Prepare a customer-local HTTP execution without sending private bytes. */
   async prepareExecution(req: PrepareExecutionRequest): Promise<CustomerExecutionResponse> {
     const raw = await this.request<Record<string, unknown>>(
@@ -550,25 +515,15 @@ export class Allowly {
 
   async getExecution(
     operationId: string,
-    opts?: { agentToken?: string },
-  ): Promise<ExecutionResponse>;
-  async getExecution(
-    operationId: string,
-    opts: { agentToken?: string; mode: "customer_sdk" },
-  ): Promise<CustomerExecutionResponse>;
-  async getExecution(
-    operationId: string,
-    opts: { agentToken?: string; mode?: "customer_sdk" } = {},
-  ): Promise<ExecutionResponse | CustomerExecutionResponse> {
+    opts: { agentToken?: string } = {},
+  ): Promise<CustomerExecutionResponse> {
     const raw = await this.request<Record<string, unknown>>(
       "GET",
       `/v1/executions/${encodeURIComponent(operationId)}`,
       undefined,
       { headers: await this.identityHeaders(opts.agentToken) },
     );
-    const response = opts.mode === "customer_sdk"
-      ? parseCustomerExecutionResponse(raw)
-      : parseExecutionResponse(raw);
+    const response = parseCustomerExecutionResponse(raw);
     if (response.operationId !== operationId) {
       throw new AllowlyProtocolError("execution response does not match the requested operation");
     }
@@ -1316,120 +1271,6 @@ function clientTimestamp(value: Date | string): string {
   return value;
 }
 
-function parseExecutionResponse(value: unknown): ExecutionResponse {
-  const raw = requireRecord(value, "execution response");
-  const operationId = requireString(raw, "operation_id");
-  const destinationId = requireString(raw, "destination_id");
-  const action = requireString(raw, "action");
-  const status = requireString(raw, "status");
-  const statuses: ExecutionStatus[] = [
-    "denied",
-    "confirmation_required",
-    "escalation_required",
-    "succeeded",
-    "failed",
-    "unknown",
-  ];
-  if (!statuses.includes(status as ExecutionStatus)) {
-    throw new AllowlyProtocolError(`invalid execution status: ${JSON.stringify(status)}`);
-  }
-  const decision = requireString(raw, "decision");
-  if (!["allow", "deny", "confirm", "escalate"].includes(decision)) {
-    throw new AllowlyProtocolError(`invalid execution decision: ${JSON.stringify(decision)}`);
-  }
-  const requestFingerprintProfile = requireString(raw, "request_fingerprint_profile");
-  if (requestFingerprintProfile !== "allowly.execution.request.v1") {
-    throw new AllowlyProtocolError(
-      `invalid execution request fingerprint profile: ${JSON.stringify(requestFingerprintProfile)}`,
-    );
-  }
-  const descriptorRaw = requireRecord(raw.request_descriptor, "execution request descriptor");
-  const descriptorMethod = requireString(descriptorRaw, "method");
-  if (descriptorMethod !== "POST") {
-    throw new AllowlyProtocolError(
-      `invalid execution request descriptor method: ${JSON.stringify(descriptorMethod)}`,
-    );
-  }
-  const requestDescriptor: ExecutionRequestDescriptor = {
-    operationId: requireString(descriptorRaw, "operation_id"),
-    authorizationId: requireString(descriptorRaw, "authorization_id"),
-    destinationId: requireString(descriptorRaw, "destination_id"),
-    action: requireString(descriptorRaw, "action"),
-    method: "POST",
-    url: requireString(descriptorRaw, "url"),
-  };
-  if (requestDescriptor.operationId !== operationId
-      || requestDescriptor.destinationId !== destinationId
-      || requestDescriptor.action !== action) {
-    throw new AllowlyProtocolError("execution request descriptor does not match the response");
-  }
-  let downstream: ExecutionDownstream | null = null;
-  if (raw.downstream !== undefined && raw.downstream !== null) {
-    const item = requireRecord(raw.downstream, "execution downstream");
-    const source = requireString(item, "source");
-    if (source !== "registered_destination") {
-      throw new AllowlyProtocolError(`invalid execution downstream source: ${JSON.stringify(source)}`);
-    }
-    const httpStatus = item.http_status;
-    if (httpStatus !== null && httpStatus !== undefined && typeof httpStatus !== "number") {
-      throw new AllowlyProtocolError("execution downstream http_status must be a number or null");
-    }
-    const responseFingerprint = item.response_fingerprint;
-    if (responseFingerprint !== null && responseFingerprint !== undefined
-        && typeof responseFingerprint !== "string") {
-      throw new AllowlyProtocolError(
-        "execution downstream response_fingerprint must be a string or null",
-      );
-    }
-    const responseFingerprintScope = requireString(item, "response_fingerprint_scope");
-    if (responseFingerprintScope !== "complete" && responseFingerprintScope !== "unavailable") {
-      throw new AllowlyProtocolError(
-        `invalid execution downstream response_fingerprint_scope: ${JSON.stringify(responseFingerprintScope)}`,
-      );
-    }
-    const result = item.result === null || item.result === undefined
-      ? null
-      : requireRecord(item.result, "execution downstream result");
-    const resultError = item.result_error ?? null;
-    if (![null, "response_not_json", "response_mapping_failed"].includes(resultError as any)) {
-      throw new AllowlyProtocolError(
-        `invalid execution downstream result_error: ${JSON.stringify(resultError)}`,
-      );
-    }
-    downstream = {
-      source: "registered_destination",
-      httpStatus: (httpStatus as number | null | undefined) ?? null,
-      responseFingerprint: (responseFingerprint as string | null | undefined) ?? null,
-      responseFingerprintScope,
-      result,
-      resultError: resultError as ExecutionDownstream["resultError"],
-    };
-  }
-  return {
-    operationId,
-    status: status as ExecutionStatus,
-    decision: decision as ExecutionResponse["decision"],
-    reason: requireString(raw, "reason"),
-    destinationId,
-    action,
-    requestFingerprintProfile,
-    requestFingerprint: requireString(raw, "request_fingerprint"),
-    requestDescriptor,
-    decisionReceipt: parseReceiptEnvelope(raw.decision_receipt),
-    downstream,
-    outcomeEvidence: raw.outcome_evidence === undefined || raw.outcome_evidence === null
-      ? null
-      : parseOutcomeEvidence(raw.outcome_evidence),
-    confirmNonce: optionalString(raw, "confirm_nonce"),
-    confirmExpiresAt: optionalString(raw, "confirm_expires_at"),
-    confirmPromptHint: optionalString(raw, "confirm_prompt_hint"),
-    escalationId: optionalString(raw, "escalation_id"),
-    escalationExpiresAt: optionalString(raw, "escalation_expires_at"),
-    escalationTo: optionalString(raw, "escalation_to"),
-    escalation: parseEscalationInfo(raw.escalation),
-  };
-}
-
 function serializeCustomerHttpCommitment(
   value: import("./types.js").CustomerHttpRequestCommitment,
 ): Record<string, unknown> {
@@ -1463,6 +1304,9 @@ function parseHeaderCommitments(value: unknown): import("./types.js").CustomerHe
 
 function parseCustomerExecutionResponse(value: unknown): CustomerExecutionResponse {
   const raw = requireRecord(value, "customer execution response");
+  if (raw.execution_mode !== "customer_sdk") {
+    throw new AllowlyProtocolError("execution response must use customer_sdk mode");
+  }
   const operationId = requireString(raw, "operation_id");
   const destinationId = requireString(raw, "destination_id");
   const action = requireString(raw, "action");

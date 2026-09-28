@@ -5,6 +5,7 @@ import {
   AllowlyProtocolError,
   AllowlyTransportError,
   SEAL_PROFILE,
+  commitCustomerHttpRequest,
 } from "../index.js";
 
 const BASE = "https://api.example.com";
@@ -1541,40 +1542,6 @@ describe("Allowly.receipts.fetchSigned", () => {
   });
 });
 
-const EXECUTION_RESPONSE = {
-  operation_id: "op_1",
-  status: "succeeded",
-  decision: "allow",
-  reason: "authorization_granted_action_active",
-  destination_id: "dst_1",
-  action: "order.submit",
-  request_fingerprint_profile: "allowly.execution.request.v1",
-  request_fingerprint: "sha256:request",
-  request_descriptor: {
-    operation_id: "op_1",
-    authorization_id: "auth_1",
-    destination_id: "dst_1",
-    action: "order.submit",
-    method: "POST",
-    url: "https://destination.example/orders",
-  },
-  decision_receipt: PENDING_RECEIPT,
-  downstream: {
-    source: "registered_destination",
-    http_status: 202,
-    response_fingerprint: "sha256:response",
-    response_fingerprint_scope: "complete",
-    result: { provider_operation_id: "downstream_1" },
-    result_error: null,
-  },
-  outcome_evidence: {
-    profile: "allowly.seal.jcs-sha256.v1",
-    record: { operation_id: "op_1" },
-    record_sha256: "sha256:outcome",
-    receipt: PENDING_RECEIPT,
-  },
-};
-
 describe("Allowly identity and governed execution", () => {
   it("uses the supplier per request and lets an explicit token override it", async () => {
     const supplier = vi.fn().mockResolvedValue("supplier-token");
@@ -1662,12 +1629,15 @@ describe("Allowly identity and governed execution", () => {
     });
     let error: unknown;
     try {
-      await client.execute({
+      await client.prepareExecution({
         operationId: "op_1",
         authorizationId: "auth_1",
-        destinationId: "dst_1",
-        payload: {},
-        clientTimestamp: "2026-09-24T20:01:02Z",
+        enabledExecutableId: "exe_1",
+        catalogOperationId: "vendor.items.list",
+        action: "vendor.items.list",
+        evidenceMode: "receipt",
+        httpRequest: commitCustomerHttpRequest("https://vendor.example/items", { method: "GET" }),
+        clientTimestamp: new Date("2026-09-24T20:01:02Z"),
         idempotencyKey: "idem_1",
       });
     } catch (caught) {
@@ -1727,151 +1697,6 @@ describe("Allowly identity and governed execution", () => {
       expect(fetch).not.toHaveBeenCalled();
     },
   );
-
-  it("executes with stable identifiers and parses selected downstream results", async () => {
-    const fetch = makeFetch(201, EXECUTION_RESPONSE);
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const result = await client.execute({
-      operationId: "op_1",
-      authorizationId: "auth_1",
-      destinationId: "dst_1",
-      payload: { order: { id: "ord_1" } },
-      clientTimestamp: new Date("2026-09-24T20:01:02.000Z"),
-      idempotencyKey: "idem_1",
-      agentToken: "jwt",
-    });
-    expect(result.status).toBe("succeeded");
-    expect(result.requestFingerprintProfile).toBe("allowly.execution.request.v1");
-    expect(result.requestDescriptor.authorizationId).toBe("auth_1");
-    expect(result.downstream?.result).toEqual({ provider_operation_id: "downstream_1" });
-    expect(result.outcomeEvidence?.record).toEqual({ operation_id: "op_1" });
-    const init = fetch.mock.calls[0][1];
-    expect(init.headers).toMatchObject({
-      "Idempotency-Key": "idem_1",
-      "X-Allowly-Agent-Token": "jwt",
-    });
-    const body = JSON.parse(init.body);
-    expect(body).toMatchObject({
-      operation_id: "op_1",
-      client_timestamp: "2026-09-24T20:01:02.000Z",
-    });
-    expect(body).not.toHaveProperty("resource");
-    expect(body).not.toHaveProperty("context");
-  });
-
-  it("does not accept a customer-local approval through managed execute", async () => {
-    const fetch = makeFetch(201, { ...EXECUTION_RESPONSE, execution_mode: "customer_sdk" });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await expect(client.execute({
-      operationId: "op_1",
-      authorizationId: "auth_1",
-      destinationId: "dst_1",
-      payload: {},
-      clientTimestamp: "2026-09-24T20:01:02Z",
-      idempotencyKey: "idem_1",
-    })).rejects.toThrow("managed execute received a customer_sdk response");
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps explicit unavailable downstream and evidence state", async () => {
-    const client = new Allowly({
-      ...CLIENT_OPTS,
-      fetch: makeFetch(201, {
-        ...EXECUTION_RESPONSE,
-        downstream: {
-          ...EXECUTION_RESPONSE.downstream,
-          http_status: null,
-          response_fingerprint: null,
-          response_fingerprint_scope: "unavailable",
-          result: {},
-        },
-        outcome_evidence: {
-          ...EXECUTION_RESPONSE.outcome_evidence,
-          receipt: null,
-          evidence_error: "unavailable",
-        },
-      }),
-    });
-    const result = await client.execute({
-      operationId: "op_1",
-      authorizationId: "auth_1",
-      destinationId: "dst_1",
-      payload: {},
-      clientTimestamp: "2026-09-24T20:01:02Z",
-      idempotencyKey: "idem_1",
-    });
-    expect(result.downstream?.responseFingerprintScope).toBe("unavailable");
-    expect(result.outcomeEvidence?.receipt).toBeNull();
-    expect(result.outcomeEvidence?.evidenceError).toBe("unavailable");
-  });
-
-  it.each([
-    {
-      status: "confirmation_required",
-      decision: "confirm",
-      review: {
-        confirm_nonce: "nonce_1",
-        confirm_expires_at: "2026-09-24T20:06:02Z",
-        confirm_prompt_hint: "Approve the order",
-      },
-    },
-    {
-      status: "escalation_required",
-      decision: "escalate",
-      review: {
-        escalation_id: "esc_1",
-        escalation_expires_at: "2026-09-24T21:01:02Z",
-        escalation_to: "ops",
-        escalation: {
-          escalation_id: "esc_1",
-          status: "pending",
-          escalation_to: "ops",
-          expires_at: "2026-09-24T21:01:02Z",
-        },
-      },
-    },
-  ])("parses paused execute review fields for $status", async ({ status, decision, review }) => {
-    const client = new Allowly({
-      ...CLIENT_OPTS,
-      fetch: makeFetch(200, {
-        ...EXECUTION_RESPONSE,
-        status,
-        decision,
-        downstream: null,
-        outcome_evidence: null,
-        ...review,
-      }),
-    });
-    const result = await client.execute({
-      operationId: "op_1",
-      authorizationId: "auth_1",
-      destinationId: "dst_1",
-      payload: { order: { id: "ord_1" } },
-      clientTimestamp: "2026-09-24T20:01:02Z",
-      idempotencyKey: "idem_1",
-    });
-    expect(result.status).toBe(status);
-    if (decision === "confirm") {
-      expect(result.confirmNonce).toBe("nonce_1");
-      expect(result.confirmPromptHint).toBe("Approve the order");
-    } else {
-      expect(result.escalationId).toBe("esc_1");
-      expect(result.escalation).toMatchObject({ status: "pending", escalationId: "esc_1" });
-    }
-  });
-
-  it("rejects a timestamp without a timezone before execute", async () => {
-    const client = new Allowly({ ...CLIENT_OPTS, fetch: vi.fn() });
-    await expect(client.execute({
-      operationId: "op_1",
-      authorizationId: "auth_1",
-      destinationId: "dst_1",
-      payload: {},
-      clientTimestamp: "2026-09-24T20:01:02",
-      idempotencyKey: "idem_1",
-    })).rejects.toThrow("timezone");
-  });
 
   it("surfaces an expired execution result without retry or fallback", async () => {
     const fetch = makeFetch(410, {

@@ -1,7 +1,7 @@
 import { Allowly, commitCustomerHttpRequest } from "../index.js";
 import type {
   ActionEntry,
-  ExecuteRequest,
+  CustomerExecutionResponse,
   PrepareExecutionRequest,
   ReceiptAcknowledgmentRequest,
 } from "../types.js";
@@ -10,15 +10,6 @@ const client = new Allowly({
   apiKey: "allowly_l1_s001_...",
   agentTokenSupplier: async () => "auth0-access-token",
 });
-
-({
-  operationId: "order-123",
-  authorizationId: "auth_123",
-  destinationId: "dst_123",
-  payload: { order: { id: "ord_123" } },
-  clientTimestamp: new Date(),
-  idempotencyKey: "order-123",
-}) satisfies ExecuteRequest;
 
 ({
   receiptId: "rcp_123",
@@ -74,16 +65,12 @@ void client.check({
   agentToken: "one-request-token",
 });
 
-void client.execute({
-  operationId: "order-123",
-  authorizationId: "auth_123",
-  destinationId: "dst_123",
-  payload: { order: { id: "ord_123" } },
-  clientTimestamp: new Date(),
-  idempotencyKey: "order-123",
-});
-
-void client.getExecution("order-123", { agentToken: "one-request-token" });
+// @ts-expect-error Hosted provider dispatch is deliberately absent from this SDK.
+void client.execute;
+const localExecution: Promise<CustomerExecutionResponse> = client.getExecution(
+  "greenhouse-candidates-list-page-1", { agentToken: "one-request-token" },
+);
+void localExecution;
 
 void client.executeHttp(greenhouseCandidateListUrl, {
   operationId: "greenhouse-candidates-list-page-1",

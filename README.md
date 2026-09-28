@@ -39,15 +39,15 @@ if (decision.decision === "allow") {
 Only `allow` permits execution. Unavailable checks fail closed unless that
 action has an explicit `fail_open` fallback configured.
 
-## Auth0 agent identity and managed execution
+## Auth0 agent identity
 
 For an authorization bound to an Auth0 machine identity, supply its short-lived
 access token separately from the Allowly runtime key. The supplier runs for
-each check or execution. Use your existing OAuth client library for Auth0 token
-reuse and keep the client secret outside this SDK.
+each check or local execution. Use your existing OAuth client library for Auth0
+token reuse and keep the client secret outside this SDK.
 
 ```typescript
-import { Allowly, hashSealValue } from "@allowly/sdk";
+import { Allowly } from "@allowly/sdk";
 
 const allowly = new Allowly({
   apiKey: process.env.ALLOWLY_API_KEY!,
@@ -60,42 +60,7 @@ await allowly.check({
   clientTimestamp: new Date(),
 });
 
-let execution = await allowly.execute({
-  operationId: "order-123-attempt-1",
-  authorizationId: "auth_...",
-  destinationId: "dst_...",
-  payload: { order: { id: "123", amount_micros: 1_250_000 } },
-  clientTimestamp: new Date(),
-  idempotencyKey: "order-123-attempt-1",
-});
-if (execution.status === "unknown") {
-  execution = await allowly.getExecution("order-123-attempt-1");
-}
-
-const acknowledgment = await allowly.acknowledgeReceipt({
-  receiptId: signedReceipt.receipt_id,
-  receiptSha256: hashSealValue(signedReceipt),
-  clientTimestamp: new Date(),
-  idempotencyKey: `ack:${signedReceipt.receipt_id}`,
-});
-
-const sameAcknowledgment = await allowly.getReceiptAcknowledgment(
-  signedReceipt.receipt_id,
-  acknowledgment.acknowledgmentId,
-);
 ```
-
-Persist the operation ID, idempotency key, and exact payload together. Never
-retry an unknown outcome under a new ID. `succeeded` reports a downstream 2xx
-HTTP result; it does not prove that the destination completed its business
-work. Allowly uses the credential stored with its registered destination, so
-do not put that credential in `payload`. Client timestamps are customer-reported
-and do not replace the timestamp issued by Allowly in a receipt.
-
-Each execution response includes `requestFingerprintProfile` and
-`requestDescriptor`. To reproduce `requestFingerprint`, hash the profile, the
-descriptor converted back to its documented snake-case wire keys, and the exact
-original payload with `hashSealValue`, then prefix the result with `sha256:`.
 
 Identity-enabled checks always fail closed, including token supplier failures
 and `identity_verification_unavailable` responses.
@@ -105,7 +70,8 @@ and `identity_verification_unavailable` responses.
 Enable a provider in **Settings → Executables** and grant the exact catalog
 operation to an action before using `executeHttp`. The SDK sends a request
 descriptor and byte commitments to Allowly for approval, then sends the original
-HTTP request from your runtime.
+HTTP request from your runtime. Allowly never receives provider credentials or
+sends the provider request.
 Allowly receives the method, origin, path, query, content type, byte counts, header
 names and hashes, body hash, and customer-reported policy input. Header values and
 body bytes stay local. Put provider credentials in local headers; do not put
@@ -186,6 +152,31 @@ provided. The current native profile is limited to HTTPS on port 443, HTTP/1.1
 over TLS 1.2, a 2 KiB request transcript, a 16 KiB UTF-8 response, and no
 redirect follow. Use witnessed mode only when the catalog and deployed witness
 service report it available.
+
+Run `allowly setup witness` from `@allowly-ai/cli` for the same workspace before
+using witnessed execution. That interactive command installs the Rust helper and
+pins the public witness key after you compare its fingerprint with the
+authenticated workspace page. Then request witnessed mode and give the SDK a new
+evidence directory for each operation:
+
+```typescript
+await allowly.executeHttp("https://api.vendor.example/v1/items", {
+  operationId: "items-read-1",
+  authorizationId: "auth_...",
+  enabledExecutableId: "exe_...",
+  catalogOperationId: "vendor.items.list",
+  action: "vendor.items.list",
+  evidenceMode: "witnessed",
+  journalDirectory: "/var/lib/my-agent/allowly-executions",
+  witness: { evidenceDirectory: "/var/lib/my-agent/allowly-evidence/items-read-1" },
+});
+```
+
+The SDK selects the installed configuration by the approved workspace ID and
+checks the pinned key against the witness session before it starts the helper.
+To use a separately provisioned helper and public key, provide both
+`witness.nativeBinaryPath` and `witness.trustedNotaryKeyPath` with the
+`witness.workspaceId` you expect.
 
 ## Create an authorization
 

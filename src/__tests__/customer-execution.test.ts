@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { createECDH, createHash, generateKeyPairSync, sign } from "node:crypto";
-import { access, chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -379,6 +379,27 @@ describe("customer-local HTTP execution", () => {
     mocks.httpsRequest.mockReset();
     mocks.tlsConnect.mockReset();
     mocks.dnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  it("reads only customer-local execution results", async () => {
+    const response = preparedResponse();
+    const client = new Allowly({
+      apiKey: "test-key",
+      baseUrl: "https://api.example.com",
+      fetch: fetchSequence(jsonResponse(200, response)),
+    });
+    await expect(client.getExecution("op_customer_1")).resolves.toMatchObject({
+      operationId: "op_customer_1",
+      executionMode: "customer_sdk",
+    });
+
+    const hosted = new Allowly({
+      apiKey: "test-key",
+      baseUrl: "https://api.example.com",
+      fetch: fetchSequence(jsonResponse(200, { ...response, execution_mode: "managed_gateway" })),
+    });
+    await expect(hosted.getExecution("op_customer_1"))
+      .rejects.toThrow("execution response must use customer_sdk mode");
   });
 
   it("commits exact lowercase header names and UTF-8 bytes", () => {
@@ -859,6 +880,15 @@ describe("customer-local HTTP execution", () => {
   it("waits for native readiness, validates the trust key, then releases the dispatch gate", async () => {
     const directory = await mkdtemp(join(tmpdir(), "allowly-customer-witness-"));
     const native = await fakeWitness(directory);
+    const witnessConfigDir = join(directory, "witness", "ws_1");
+    await mkdir(witnessConfigDir, { recursive: true });
+    await writeFile(join(witnessConfigDir, "config.json"), JSON.stringify({
+      version: 1,
+      workspaceId: "ws_1",
+      nativeBinaryPath: native.binaryPath,
+      trustedNotaryKeyPath: native.trustedKeyPath,
+      fingerprintSha256: native.fingerprint.slice("sha256:".length),
+    }));
     const evidenceDirectory = join(directory, "evidence");
     const prepared = witnessedPrepared(native.fingerprint);
     let call = 0;
@@ -906,16 +936,19 @@ describe("customer-local HTTP execution", () => {
       fetch,
     });
 
-    const result = await client.executeHttp(URL, {
-      ...customerOptions(join(directory, "journal")),
-      evidenceMode: "witnessed",
-      witness: {
-        nativeBinaryPath: native.binaryPath,
-        trustedNotaryKeyPath: native.trustedKeyPath,
-        evidenceDirectory,
-        workspaceId: "ws_1",
-      },
-    });
+    const previousConfigDir = process.env.ALLOWLY_CONFIG_DIR;
+    process.env.ALLOWLY_CONFIG_DIR = directory;
+    let result;
+    try {
+      result = await client.executeHttp(URL, {
+        ...customerOptions(join(directory, "journal")),
+        evidenceMode: "witnessed",
+        witness: { evidenceDirectory },
+      });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.ALLOWLY_CONFIG_DIR;
+      else process.env.ALLOWLY_CONFIG_DIR = previousConfigDir;
+    }
 
     expect(result.state).toBe("response_observed");
     expect(await fileExists(join(evidenceDirectory, "dispatch.approved.json"))).toBe(true);

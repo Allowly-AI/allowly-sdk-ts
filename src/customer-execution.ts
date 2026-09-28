@@ -32,6 +32,7 @@ import type {
   ResumeHttpExecutionRequest,
 } from "./types.js";
 import { hashSealValue, verifyReceipt } from "./verify.js";
+import { loadInstalledWitnessConfig } from "./witness-config.js";
 
 const HEADER_PROFILE = "allowly.execution.header.v1";
 const JOURNAL_VERSION = 1;
@@ -383,11 +384,26 @@ async function executeWitnessed(
   if (session === null) {
     throw new AllowlyProtocolError("witnessed approval did not include a witness session");
   }
-  if (witness.workspaceId !== stringField(authorization.approval, "workspace_id")) {
+  const workspaceId = stringField(authorization.approval, "workspace_id");
+  if (witness.workspaceId !== undefined && witness.workspaceId !== workspaceId) {
     throw new Error("witness workspace ID does not match the approval");
   }
+  const usesInstalledWitness = witness.nativeBinaryPath === undefined
+    && witness.trustedNotaryKeyPath === undefined;
+  if (!usesInstalledWitness
+      && (witness.nativeBinaryPath === undefined || witness.trustedNotaryKeyPath === undefined)) {
+    throw new Error("provide both witness paths or neither to use `allowly setup witness`");
+  }
+  const installed = usesInstalledWitness ? await loadInstalledWitnessConfig(workspaceId) : null;
+  if (installed !== null
+      && normalizeDigest(installed.fingerprintSha256)
+        !== normalizeDigest(session.trustedNotaryKeyFingerprintSha256)) {
+    throw new Error("installed witness fingerprint does not match the witness session");
+  }
+  const trustedNotaryKeyPath = witness.trustedNotaryKeyPath ?? installed!.trustedNotaryKeyPath;
+  const nativeBinaryPath = witness.nativeBinaryPath ?? installed!.nativeBinaryPath;
   await assertTrustedNotaryKey(
-    witness.trustedNotaryKeyPath,
+    trustedNotaryKeyPath,
     session.trustedNotaryKeyFingerprintSha256,
   );
   await ensureNewDirectory(witness.evidenceDirectory);
@@ -398,14 +414,14 @@ async function executeWitnessed(
   });
   if (token.sessionId !== session.sessionId
       || token.witnessUrl !== session.witnessUrl
-      || token.workspaceId !== witness.workspaceId
+      || token.workspaceId !== workspaceId
       || normalizeDigest(token.trustedNotaryKeyFingerprintSha256)
         !== normalizeDigest(session.trustedNotaryKeyFingerprintSha256)) {
     throw new AllowlyProtocolError("witness token does not match the prepared session");
   }
   const child = startNativeWitness(
-    witness.nativeBinaryPath,
-    witness.trustedNotaryKeyPath,
+    nativeBinaryPath,
+    trustedNotaryKeyPath,
     witness.evidenceDirectory,
     {
       approval_sha256: approvalSha256,
@@ -486,7 +502,7 @@ async function executeWitnessed(
         profile: "customer_held_tlsn_bundle_v1",
         evidencePath: native.evidence_path,
         attestationPath: native.attestation_path,
-        trustedNotaryKeyPath: witness.trustedNotaryKeyPath,
+        trustedNotaryKeyPath,
       };
     } else {
       outcome = {
@@ -571,7 +587,6 @@ async function reconcileAfterAmbiguousDispatch(
   try {
     response = await client.getExecution(journal.operation_id, {
       agentToken,
-      mode: "customer_sdk",
     });
   } catch {
     // An in-progress or temporarily unavailable reconciliation result is still

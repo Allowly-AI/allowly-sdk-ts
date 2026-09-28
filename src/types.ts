@@ -56,14 +56,6 @@ export interface EnabledExecutableResponse {
   disabledAt: string | null;
 }
 export type SealWebhookStatus = "received" | "signing" | "sealed" | "rejected" | "failed";
-export type ExecutionStatus =
-  | "denied"
-  | "confirmation_required"
-  | "escalation_required"
-  | "succeeded"
-  | "failed"
-  | "unknown";
-
 export interface ReceiptEnvelopePending {
   status: "pending";
   receiptId: string;
@@ -138,62 +130,12 @@ export interface BudgetSettlementResponse {
   receipt: ReceiptEnvelope;
 }
 
-export interface ExecutionDownstream {
-  source: "registered_destination";
-  httpStatus: number | null;
-  responseFingerprint: string | null;
-  responseFingerprintScope: "complete" | "unavailable";
-  result: Record<string, unknown> | null;
-  resultError: "response_not_json" | "response_mapping_failed" | null;
-}
-
 export interface OutcomeEvidence {
   profile: "allowly.seal.jcs-sha256.v1";
   record: Record<string, unknown>;
   recordSha256: string;
   receipt: ReceiptEnvelope | null;
   evidenceError: "unavailable" | null;
-}
-
-export interface ExecuteRequest {
-  operationId: string;
-  authorizationId: string;
-  destinationId: string;
-  payload: unknown;
-  clientTimestamp: Date | string;
-  idempotencyKey: string;
-  agentToken?: string;
-}
-
-export interface ExecutionRequestDescriptor {
-  operationId: string;
-  authorizationId: string;
-  destinationId: string;
-  action: string;
-  method: "POST";
-  url: string;
-}
-
-export interface ExecutionResponse {
-  operationId: string;
-  status: ExecutionStatus;
-  decision: Decision;
-  reason: string;
-  destinationId: string;
-  action: string;
-  requestFingerprintProfile: "allowly.execution.request.v1";
-  requestFingerprint: string;
-  requestDescriptor: ExecutionRequestDescriptor;
-  decisionReceipt: ReceiptEnvelope;
-  downstream: ExecutionDownstream | null;
-  outcomeEvidence: OutcomeEvidence | null;
-  confirmNonce?: string | null;
-  confirmExpiresAt?: string | null;
-  confirmPromptHint?: string | null;
-  escalationId?: string | null;
-  escalationExpiresAt?: string | null;
-  escalationTo?: string | null;
-  escalation?: EscalationInfo | null;
 }
 
 export type CustomerEvidenceMode = "receipt" | "witnessed";
@@ -383,10 +325,12 @@ export interface CustomerHttpOptions {
   /** Provider timeout. Also bounds native execution unless witness.timeoutMs is set. */
   timeoutMs?: number;
   witness?: {
-    nativeBinaryPath: string;
-    trustedNotaryKeyPath: string;
+    /** Omit both paths to use the workspace key and helper installed by `allowly setup witness`. */
+    nativeBinaryPath?: string;
+    trustedNotaryKeyPath?: string;
     evidenceDirectory: string;
-    workspaceId: string;
+    /** Optional expected workspace. If supplied, it must match the approval. */
+    workspaceId?: string;
     timeoutMs?: number;
   };
 }
