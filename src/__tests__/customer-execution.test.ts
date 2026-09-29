@@ -222,7 +222,7 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function fakeWitness(directory: string, options: { corruptResponse?: boolean } = {}) {
+async function fakeWitness(directory: string, options: { corruptResponse?: boolean; omitAttestationHash?: boolean } = {}) {
   const ecdh = createECDH("prime256v1");
   ecdh.generateKeys();
   const publicKey = ecdh.getPublicKey(undefined, "compressed");
@@ -260,7 +260,9 @@ process.stdin.on("end", async () => {
     request_binding_verification: "verified_from_full_presentation",
     approval_sha256: parsed.approval_sha256,
     artifact_sha256: crypto.createHash("sha256").update(presentation).digest("hex"),
-    attestation_sha256: crypto.createHash("sha256").update(attestation).digest("hex"),
+    ...(${options.omitAttestationHash === true} ? {} : {
+      attestation_sha256: crypto.createHash("sha256").update(attestation).digest("hex"),
+    }),
     evidence_path: path.join(output, "presentation.json"),
     attestation_path: path.join(output, "attestation.json"),
     response
@@ -679,6 +681,37 @@ describe("customer-local HTTP execution", () => {
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/v1/execute"))).toHaveLength(1);
   });
 
+  it("retries a lost prepare response with the exact saved request", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "allowly-customer-prepare-retry-"));
+    const prepared = preparedResponse();
+    const fetch = fetchSequence(
+      new Error("lost prepare reply"),
+      jsonResponse(201, prepared),
+      jsonResponse(200, dispatchResponse(prepared)),
+      jsonResponse(201, finalResponse(prepared)),
+    );
+    mockProviderResponse();
+    const client = new Allowly({ apiKey: "test-key", baseUrl: "https://api.example.com", fetch });
+    const options = { ...customerOptions(directory), clientTimestamp: undefined };
+
+    await expect(client.executeHttp(URL, options)).rejects.toThrow(
+      "Allowly request failed",
+    );
+    await expect(client.executeHttp(URL, {
+      ...options,
+      body: JSON.stringify({ stage: "hired" }),
+    })).rejects.toThrow("different customer HTTP inputs");
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const result = await client.executeHttp(URL, options);
+    const prepares = fetch.mock.calls.filter(([url]) => String(url).endsWith("/v1/execute"));
+    expect(result.state).toBe("response_observed");
+    expect(prepares).toHaveLength(2);
+    expect(prepares[0]![1]!.body).toBe(prepares[1]![1]!.body);
+    expect(prepares[0]![1]!.headers).toEqual(prepares[1]![1]!.headers);
+    expect(mocks.httpsRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("retries only the stored outcome upload after a failure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "allowly-customer-outbox-"));
     const prepared = preparedResponse();
@@ -753,6 +786,51 @@ describe("customer-local HTTP execution", () => {
     );
     expect(mocks.dnsLookup).not.toHaveBeenCalled();
     expect(mocks.httpsRequest).not.toHaveBeenCalled();
+  });
+
+  it("resumes an authorized witnessed call after witness options are supplied", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "allowly-customer-witness-retry-"));
+    const native = await fakeWitness(directory);
+    const prepared = witnessedPrepared(native.fingerprint);
+    const fetch = fetchSequence(
+      jsonResponse(201, prepared),
+      jsonResponse(200, {
+        session_id: "wit_1",
+        workspace_id: "ws_1",
+        approval_sha256: prepared.approval_sha256,
+        witness_url: "wss://witness.example/sessions/wit_1",
+        admission_token: "one-time-secret",
+        expires_at: "2099-01-01T00:05:00Z",
+        trusted_notary_key_fingerprint_sha256: native.fingerprint,
+        native_profile: "customer_held_tlsn_bundle_v1",
+      }),
+      jsonResponse(200, dispatchResponse(prepared)),
+      jsonResponse(201, {
+        ...finalResponse(prepared),
+        effective_evidence_mode: "witnessed",
+        evidence_state: "customer_held_witness_bundle",
+      }),
+    );
+    const client = new Allowly({ apiKey: "test-key", baseUrl: "https://api.example.com", fetch });
+    const options = {
+      ...customerOptions(join(directory, "journal")),
+      evidenceMode: "witnessed" as const,
+      witness: {
+        nativeBinaryPath: native.binaryPath,
+        trustedNotaryKeyPath: native.trustedKeyPath,
+        evidenceDirectory: join(directory, "evidence"),
+      },
+    };
+
+    await expect(client.executeHttp(URL, { ...options, witness: undefined })).rejects.toThrow(
+      "provide witness options",
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const result = await client.executeHttp(URL, options);
+    expect(result.state).toBe("response_observed");
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/v1/execute"))).toHaveLength(1);
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/dispatch"))).toHaveLength(1);
   });
 
   it("does not allow a requested witnessed execution to downgrade to receipt", async () => {
@@ -1053,9 +1131,12 @@ describe("customer-local HTTP execution", () => {
     expect(await fileExists(join(evidenceDirectory, "dispatch.started.json"))).toBe(false);
   });
 
-  it("reports unknown without attestation when native response commitments are corrupt", async () => {
+  it.each([
+    ["response commitments are corrupt", { corruptResponse: true }],
+    ["attestation hash is missing", { omitAttestationHash: true }],
+  ])("reports unknown without attestation when native %s", async (_reason, fault) => {
     const directory = await mkdtemp(join(tmpdir(), "allowly-customer-witness-corrupt-"));
-    const native = await fakeWitness(directory, { corruptResponse: true });
+    const native = await fakeWitness(directory, fault);
     const evidenceDirectory = join(directory, "evidence");
     const prepared = witnessedPrepared(native.fingerprint);
     const fetch = fetchSequence(

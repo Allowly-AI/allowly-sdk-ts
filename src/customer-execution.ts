@@ -77,6 +77,8 @@ interface ExecutionJournal {
   operation_id: string;
   request_sha256: string;
   phase: "prepared" | "authorized" | "dispatch_attempted" | "outcome_pending" | "complete";
+  prepare_client_timestamp?: string;
+  prepare_idempotency_key?: string;
   authorization?: CustomerExecutionResponse;
   dispatch_attempted_at?: string;
   outcome?: JournalOutcome;
@@ -133,46 +135,61 @@ export async function executeHttp(
   const journalPath = operationJournalPath(options.journalDirectory, options.operationId);
   return withJournalLock(journalPath, async () => {
     const existing = await readJournal(journalPath);
+    let journal: ExecutionJournal;
+    let authorization: CustomerExecutionResponse;
     if (existing !== null) {
       assertJournalIdentity(existing, options.operationId, requestSha256);
-      return resumeJournal(client, journalPath, existing, options.agentToken);
-    }
-
-    let journal: ExecutionJournal = {
-      version: JOURNAL_VERSION,
-      operation_id: options.operationId,
-      request_sha256: requestSha256,
-      phase: "prepared",
-    };
-    await writeJournal(journalPath, journal);
-
-    const authorization = await client.prepareExecution({
-      operationId: options.operationId,
-      authorizationId: options.authorizationId,
-      enabledExecutableId: options.enabledExecutableId,
-      catalogOperationId: options.catalogOperationId,
-      action: options.action,
-      evidenceMode: options.evidenceMode ?? "receipt",
-      httpRequest: request.commitment,
-      policyInput: options.policyInput,
-      clientTimestamp: options.clientTimestamp ?? new Date(),
-      idempotencyKey: options.idempotencyKey ?? stableId("prepare", options.operationId),
-      agentToken: options.agentToken,
-    });
-    if (authorization.decision !== "allow") {
-      journal = { ...journal, phase: "complete", authorization, final_response: authorization };
+      if (existing.phase !== "prepared" && existing.phase !== "authorized") {
+        return resumeJournal(client, journalPath, existing, options.agentToken);
+      }
+      journal = existing;
+    } else {
+      journal = {
+        version: JOURNAL_VERSION,
+        operation_id: options.operationId,
+        request_sha256: requestSha256,
+        phase: "prepared",
+        prepare_client_timestamp: prepareClientTimestamp(options.clientTimestamp),
+        prepare_idempotency_key: options.idempotencyKey ?? stableId("prepare", options.operationId),
+      };
       await writeJournal(journalPath, journal);
-      return { state: "not_allowed", authorization };
     }
-    validateApprovedResponse(authorization, request, options);
-    const evidencePackage = evidencePackageFor(authorization, null, null);
-    journal = {
-      ...journal,
-      phase: "authorized",
-      authorization,
-      evidence_package: evidencePackage,
-    };
-    await writeJournal(journalPath, journal);
+
+    if (journal.phase === "prepared") {
+      if (typeof journal.prepare_client_timestamp !== "string"
+          || typeof journal.prepare_idempotency_key !== "string") {
+        throw new Error("prepared journal lacks retry inputs; reconcile with the low-level API");
+      }
+      authorization = await client.prepareExecution({
+        operationId: options.operationId,
+        authorizationId: options.authorizationId,
+        enabledExecutableId: options.enabledExecutableId,
+        catalogOperationId: options.catalogOperationId,
+        action: options.action,
+        evidenceMode: options.evidenceMode ?? "receipt",
+        httpRequest: request.commitment,
+        policyInput: options.policyInput,
+        clientTimestamp: journal.prepare_client_timestamp,
+        idempotencyKey: journal.prepare_idempotency_key,
+        agentToken: options.agentToken,
+      });
+      if (authorization.decision !== "allow") {
+        journal = { ...journal, phase: "complete", authorization, final_response: authorization };
+        await writeJournal(journalPath, journal);
+        return { state: "not_allowed", authorization };
+      }
+      validateApprovedResponse(authorization, request, options);
+      journal = {
+        ...journal,
+        phase: "authorized",
+        authorization,
+        evidence_package: evidencePackageFor(authorization, null, null),
+      };
+      await writeJournal(journalPath, journal);
+    } else {
+      authorization = requireAuthorization(journal);
+      validateApprovedResponse(authorization, request, options);
+    }
 
     if (authorization.effectiveEvidenceMode === "witnessed") {
       if (options.witness === undefined) {
@@ -648,7 +665,8 @@ function validateApprovedResponse(
   request: LocalRequest,
   options: CustomerHttpOptions,
 ): void {
-  if (response.status !== "approved"
+  if (response.decision !== "allow"
+      || response.status !== "approved"
       || response.decisionState !== "allowed"
       || response.targetState !== "not_started"
       || response.evidenceState !== "pending"
@@ -1104,9 +1122,7 @@ async function finishNativeWitness(
   if (normalizeDigest(stringField(raw, "artifact_sha256")) !== digest(artifactBytes)) {
     throw new Error("native witness presentation hash does not match the artifact");
   }
-  if (raw.attestation_sha256 !== undefined
-      && (typeof raw.attestation_sha256 !== "string"
-        || normalizeDigest(raw.attestation_sha256) !== digest(attestationBytes))) {
+  if (normalizeDigest(stringField(raw, "attestation_sha256")) !== digest(attestationBytes)) {
     throw new Error("native witness attestation hash does not match the artifact");
   }
   const attestation = JSON.parse(attestationBytes.toString("utf8")) as unknown;
@@ -1392,6 +1408,16 @@ function journalRequestSha256(request: LocalRequest, options: CustomerHttpOption
       estimatedCostMicros: options.policyInput?.estimatedCostMicros ?? null,
     },
   }), "utf8"));
+}
+
+function prepareClientTimestamp(value: Date | string | undefined): string {
+  if (value === undefined) return new Date().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+      || Number.isNaN(Date.parse(value))) {
+    throw new Error("clientTimestamp must be a valid timezone-aware timestamp");
+  }
+  return value;
 }
 
 function assertJournalIdentity(
