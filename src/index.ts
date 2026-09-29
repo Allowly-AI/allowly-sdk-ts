@@ -1,4 +1,6 @@
 export { Allowly, AllowlyTransportError } from "./client.js";
+export { NativeAgentCredential } from "./agent-identity.js";
+export type { NativeAgentCredentialData } from "./agent-identity.js";
 export { SealWebhookClient } from "./seal-webhook.js";
 export {
   commitCustomerHttpRequest,

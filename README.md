@@ -39,12 +39,37 @@ if (decision.decision === "allow") {
 Only `allow` permits execution. Unavailable checks fail closed unless that
 action has an explicit `fail_open` fallback configured.
 
-## Auth0 agent identity
+## Allowly agent identity
+
+Create the agent's policy, then run `allowly agent enroll <exact-agent-id>`
+from the Allowly CLI. Store the resulting private credential on the trusted
+machine that runs the agent, then create a **new authorization** for that agent.
+The credential identifies the agent; the authorization and policy still decide
+what it may do. The workspace runtime API key is still required.
+
+```typescript
+import { Allowly, NativeAgentCredential } from "@allowly/sdk";
+
+const credential = await NativeAgentCredential.fromFile("/secure/path/agent.json");
+const allowly = new Allowly({
+  apiKey: process.env.ALLOWLY_API_KEY!,
+  agentTokenSupplier: credential.token,
+});
+
+await allowly.check({ authorizationId: "auth_...", actions: ["order.submit"] });
+```
+
+The SDK signs a fresh 60-second token for each request. The private key remains
+in your runtime; do not commit or log the credential file. The CLI registers
+only its public key with Allowly.
+
+## Existing Auth0 agent identity
 
 For an authorization bound to an Auth0 machine identity, supply its short-lived
 access token separately from the Allowly runtime key. The supplier runs for
 each check or local execution. Use your existing OAuth client library for Auth0
-token reuse and keep the client secret outside this SDK.
+token reuse and keep the client secret outside this SDK. New self-service Auth0
+setup is unavailable. Contact us to add your own identity provider.
 
 ```typescript
 import { Allowly } from "@allowly/sdk";

@@ -1,4 +1,5 @@
-import { Allowly, commitCustomerHttpRequest } from "../index.js";
+import { Allowly, NativeAgentCredential, commitCustomerHttpRequest } from "../index.js";
+import type { NativeAgentCredentialData } from "../index.js";
 import type {
   ActionEntry,
   CustomerExecutionResponse,
@@ -10,6 +11,25 @@ const client = new Allowly({
   apiKey: "allowly_l1_s001_...",
   agentTokenSupplier: async () => "auth0-access-token",
 });
+
+const enrolledAgent = {
+  version: 1,
+  provider: "allowly",
+  workspace_id: "ws_123",
+  agent_id: "agent_123",
+  binding_id: "aib_123",
+  key_id: "ack_123",
+  private_key_jwk: { kty: "OKP", crv: "Ed25519", x: "public-key", d: "private-key" },
+} satisfies NativeAgentCredentialData;
+const nativeCredential = new NativeAgentCredential(enrolledAgent);
+const nativeClient = new Allowly({
+  apiKey: "allowly_l1_s001_...",
+  agentTokenSupplier: nativeCredential.token,
+});
+void nativeClient;
+const fileCredential: Promise<NativeAgentCredential> =
+  NativeAgentCredential.fromFile("/secure/path/agent.json");
+void fileCredential;
 
 ({
   receiptId: "rcp_123",
