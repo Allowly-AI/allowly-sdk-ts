@@ -223,6 +223,14 @@ describe("Allowly.check", () => {
     await expect(client.check({ authorizationId: "auth_1", actions: ["x"] })).rejects.toMatchObject({ status: 401, code: "invalid_or_revoked_api_key" });
   });
 
+  it.each([[404, "agent_not_found"], [503, "agent_registration_unavailable"]])(
+    "preserves registration error codes in the common API error parser (%s)", async (status, code) => {
+      const fetch = makeFetch(Number(status), { error: { code, message: "Registration failed" } });
+      const client = new Allowly({ ...CLIENT_OPTS, fetch });
+      await expect(client.authorizations.create({ userId: "u1", policyId: "p1" })).rejects.toMatchObject({ status, code });
+    },
+  );
+
   it("sends correct Authorization header", async () => {
     const fetch = makeFetch(200, checkBody("x", { decision: "deny", reason: "authorization_not_found", receipt: PENDING_RECEIPT }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
