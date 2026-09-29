@@ -423,6 +423,7 @@ async function executeWitnessed(
     nativeBinaryPath,
     trustedNotaryKeyPath,
     witness.evidenceDirectory,
+    installed?.trustedWitnessCaPath,
     {
       approval_sha256: approvalSha256,
       approval: authorization.approval,
@@ -959,6 +960,7 @@ function startNativeWitness(
   binary: string,
   trustedKey: string,
   outputDirectory: string,
+  witnessCaCert: string | undefined,
   input: Record<string, unknown>,
 ): ChildProcessWithoutNullStreams {
   const env: NodeJS.ProcessEnv = {};
@@ -971,6 +973,7 @@ function startNativeWitness(
     outputDirectory,
     "--trusted-key",
     trustedKey,
+    ...(witnessCaCert === undefined ? [] : ["--witness-ca-cert", witnessCaCert]),
   ], { stdio: ["pipe", "pipe", "pipe"], env });
   const state: NativeChildState = {
     stdout: [],

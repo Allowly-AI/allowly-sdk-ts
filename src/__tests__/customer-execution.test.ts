@@ -241,6 +241,7 @@ process.stdin.on("end", async () => {
   const args = process.argv.slice(2);
   const output = args[args.indexOf("--output") + 1];
   fs.mkdirSync(output, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(output, "args.json"), JSON.stringify(args));
   fs.writeFileSync(path.join(output, "witness.ready.json"), JSON.stringify({approval_sha256: parsed.approval_sha256}));
   while (!fs.existsSync(path.join(output, "dispatch.approved.json"))) {
     await new Promise(resolve => setTimeout(resolve, 5));
@@ -885,12 +886,17 @@ describe("customer-local HTTP execution", () => {
     const native = await fakeWitness(directory);
     const witnessConfigDir = join(directory, "witness", "ws_1");
     await mkdir(witnessConfigDir, { recursive: true });
+    const witnessCa = join(witnessConfigDir, "witness-ca.pem");
+    const caBytes = Buffer.from("-----BEGIN CERTIFICATE-----\nlocal-test-ca\n-----END CERTIFICATE-----\n");
+    await writeFile(witnessCa, caBytes);
     await writeFile(join(witnessConfigDir, "config.json"), JSON.stringify({
       version: 1,
       workspaceId: "ws_1",
       nativeBinaryPath: native.binaryPath,
       trustedNotaryKeyPath: native.trustedKeyPath,
       fingerprintSha256: native.fingerprint.slice("sha256:".length),
+      trustedWitnessCaPath: witnessCa,
+      witnessCaFingerprintSha256: createHash("sha256").update(caBytes).digest("hex"),
     }));
     const evidenceDirectory = join(directory, "evidence");
     const prepared = witnessedPrepared(native.fingerprint);
@@ -956,6 +962,10 @@ describe("customer-local HTTP execution", () => {
     expect(result.state).toBe("response_observed");
     expect(await fileExists(join(evidenceDirectory, "dispatch.approved.json"))).toBe(true);
     expect(await fileExists(join(evidenceDirectory, "dispatch.started.json"))).toBe(true);
+    expect(JSON.parse(await readFile(join(evidenceDirectory, "args.json"), "utf8")))
+      .toContain("--witness-ca-cert");
+    expect(JSON.parse(await readFile(join(evidenceDirectory, "args.json"), "utf8")))
+      .toContain(witnessCa);
     expect(JSON.stringify(await readFile(join(evidenceDirectory, "attestation.json"), "utf8")))
       .not.toContain("one-time-secret");
   });

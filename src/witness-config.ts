@@ -10,6 +10,8 @@ interface InstalledWitnessConfig {
   nativeBinaryPath: string;
   trustedNotaryKeyPath: string;
   fingerprintSha256: string;
+  trustedWitnessCaPath?: string;
+  witnessCaFingerprintSha256?: string;
 }
 
 /** @internal The CLI writes this public, workspace-scoped trust configuration. */
@@ -42,7 +44,11 @@ export async function loadInstalledWitnessConfig(workspaceId: string): Promise<I
       || typeof config.nativeBinaryPath !== "string" || !isAbsolute(config.nativeBinaryPath)
       || typeof config.trustedNotaryKeyPath !== "string" || !isAbsolute(config.trustedNotaryKeyPath)
       || typeof config.fingerprintSha256 !== "string"
-      || !/^[0-9a-f]{64}$/.test(config.fingerprintSha256)) {
+      || !/^[0-9a-f]{64}$/.test(config.fingerprintSha256)
+      || ((config.trustedWitnessCaPath === undefined) !== (config.witnessCaFingerprintSha256 === undefined))
+      || (config.trustedWitnessCaPath !== undefined && !isAbsolute(config.trustedWitnessCaPath))
+      || (config.witnessCaFingerprintSha256 !== undefined
+        && !/^[0-9a-f]{64}$/.test(config.witnessCaFingerprintSha256))) {
     throw new Error("installed witness config is invalid");
   }
   await access(config.nativeBinaryPath, constants.X_OK);
@@ -71,6 +77,13 @@ export async function loadInstalledWitnessConfig(workspaceId: string): Promise<I
   const fingerprint = createHash("sha256").update(compressed).digest("hex");
   if (fingerprint !== config.fingerprintSha256) {
     throw new Error("installed witness public key does not match its pinned fingerprint");
+  }
+  if (config.trustedWitnessCaPath !== undefined) {
+    const caBytes = await readFile(config.trustedWitnessCaPath);
+    if (caBytes.length < 1 || caBytes.length > 32 * 1024
+        || createHash("sha256").update(caBytes).digest("hex") !== config.witnessCaFingerprintSha256) {
+      throw new Error("installed witness CA does not match its pinned fingerprint");
+    }
   }
   return config as InstalledWitnessConfig;
 }

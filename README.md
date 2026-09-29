@@ -174,6 +174,9 @@ await allowly.executeHttp("https://api.vendor.example/v1/items", {
 
 The SDK selects the installed configuration by the approved workspace ID and
 checks the pinned key against the witness session before it starts the helper.
+For a local witness with a private CA, `allowly setup witness --witness-ca-cert`
+also pins that CA. The SDK checks its fingerprint before dispatch and passes it
+to the helper for the witness socket only. Provider HTTPS trust is unchanged.
 To use a separately provisioned helper and public key, provide both
 `witness.nativeBinaryPath` and `witness.trustedNotaryKeyPath` with the
 `witness.workspaceId` you expect.

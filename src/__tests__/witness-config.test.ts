@@ -31,16 +31,25 @@ it("accepts only the requested workspace and pinned P-256 key", async () => {
   await writeFile(keyPath, JSON.stringify({ alg: 2, data: [...point] }));
   const fingerprintSha256 = createHash("sha256").update(point).digest("hex");
   const configPath = join(workspaceDirectory, "config.json");
+  const trustedWitnessCaPath = join(workspaceDirectory, "witness-ca.pem");
+  const caBytes = Buffer.from("-----BEGIN CERTIFICATE-----\nlocal-test-ca\n-----END CERTIFICATE-----\n");
+  await writeFile(trustedWitnessCaPath, caBytes);
   const config = {
     version: 1,
     workspaceId: "ws_expected",
     nativeBinaryPath: helper,
     trustedNotaryKeyPath: keyPath,
     fingerprintSha256,
+    trustedWitnessCaPath,
+    witnessCaFingerprintSha256: createHash("sha256").update(caBytes).digest("hex"),
   };
   await writeFile(configPath, JSON.stringify(config));
   await expect(loadInstalledWitnessConfig("ws_expected")).resolves.toEqual(config);
   await expect(loadInstalledWitnessConfig("ws_other")).rejects.toThrow("run `allowly setup witness`");
+
+  await writeFile(trustedWitnessCaPath, "changed");
+  await expect(loadInstalledWitnessConfig("ws_expected")).rejects.toThrow("witness CA does not match");
+  await writeFile(trustedWitnessCaPath, caBytes);
 
   await writeFile(configPath, JSON.stringify({ ...config, fingerprintSha256: "0".repeat(64) }));
   await expect(loadInstalledWitnessConfig("ws_expected")).rejects.toThrow("does not match its pinned fingerprint");
