@@ -352,6 +352,12 @@ export interface CustomerExecutionEvidencePackage {
     | null;
 }
 
+export interface CustomerHttpProviderResponse {
+  status: number;
+  /** Full local response bytes. Never uploaded to Allowly or saved in the journal. */
+  body: Uint8Array;
+}
+
 export type CustomerHttpExecutionResult =
   | {
     state: "not_allowed";
@@ -360,14 +366,20 @@ export type CustomerHttpExecutionResult =
   | {
     state: "response_observed";
     authorization: CustomerExecutionResponse;
-    response: CustomerExecutionResponse;
+    /** Allowly's outcome response; null while outcome upload is unconfirmed. */
+    response: CustomerExecutionResponse | null;
     evidencePackage: CustomerExecutionEvidencePackage;
+    outcomePending: boolean;
+    /** Available only on the call that observed provider bytes, not journal resume. */
+    providerResponse: CustomerHttpProviderResponse | null;
   }
   | {
     state: "unknown";
     authorization: CustomerExecutionResponse;
     response: CustomerExecutionResponse | null;
     evidencePackage: CustomerExecutionEvidencePackage;
+    outcomePending: boolean;
+    providerResponse: CustomerHttpProviderResponse | null;
   };
 
 export interface ResumeHttpExecutionRequest {

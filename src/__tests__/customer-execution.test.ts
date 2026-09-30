@@ -536,6 +536,10 @@ describe("customer-local HTTP execution", () => {
     const result = await client.executeHttp(URL, customerOptions(directory));
 
     expect(result.state).toBe("response_observed");
+    expect(result).toMatchObject({
+      outcomePending: false,
+      providerResponse: { status: 302, body: Buffer.from("") },
+    });
     expect(mocks.httpsRequest).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetch.mock.calls[2]![1]!.body as string)).toMatchObject({
       target_state: "response_observed",
@@ -719,6 +723,7 @@ describe("customer-local HTTP execution", () => {
       jsonResponse(201, prepared),
       jsonResponse(200, dispatchResponse(prepared)),
       new Error("outcome upload unavailable"),
+      jsonResponse(503, { detail: "outcome upload still unavailable" }),
       jsonResponse(201, finalResponse(prepared)),
     );
     mockProviderResponse();
@@ -728,23 +733,68 @@ describe("customer-local HTTP execution", () => {
       fetch,
     });
 
-    await expect(client.executeHttp(URL, customerOptions(directory))).rejects.toThrow(
-      "Allowly request failed",
-    );
-    const result = await client.resumeHttpExecution({
+    const first = await client.executeHttp(URL, customerOptions(directory));
+    expect(first).toMatchObject({
+      state: "response_observed", outcomePending: true, response: null,
+      providerResponse: { status: 202, body: Buffer.from('{"id":"provider-1"}') },
+    });
+    const journalPath = join(directory, `${createHash("sha256").update("op_customer_1").digest("hex")}.json`);
+    const saved = await readFile(journalPath, "utf8");
+    expect(JSON.parse(saved).phase).toBe("outcome_pending");
+    expect(saved).not.toContain("provider-1");
+    expect(saved).not.toContain("local-secret");
+    expect(JSON.parse(fetch.mock.calls[2]![1]!.body as string)).not.toHaveProperty("providerResponse");
+    expect(fetch.mock.calls[2]![1]!.body).not.toContain("provider-1");
+
+    const pending = await client.resumeHttpExecution({
       operationId: "op_customer_1",
       journalDirectory: directory,
       agentToken: "agent-jwt",
     });
+    expect(pending).toMatchObject({
+      state: "response_observed", outcomePending: true, response: null, providerResponse: null,
+    });
+    expect(JSON.parse(await readFile(journalPath, "utf8")).phase).toBe("outcome_pending");
 
-    expect(result.state).toBe("response_observed");
+    const result = await client.executeHttp(URL, customerOptions(directory));
+    expect(result).toMatchObject({
+      state: "response_observed", outcomePending: false, response: { status: "succeeded" },
+      providerResponse: null,
+    });
+    expect(JSON.parse(await readFile(journalPath, "utf8")).phase).toBe("complete");
+    expect(await client.resumeHttpExecution({
+      operationId: "op_customer_1", journalDirectory: directory,
+    })).toEqual(result);
+
     expect(mocks.httpsRequest).toHaveBeenCalledTimes(1);
     const outcomeCalls = fetch.mock.calls.filter(([url]) => String(url).endsWith("/outcome"));
-    expect(outcomeCalls).toHaveLength(2);
+    expect(outcomeCalls).toHaveLength(3);
     expect(outcomeCalls[0]![1]!.body).toBe(outcomeCalls[1]![1]!.body);
+    expect(outcomeCalls[0]![1]!.body).toBe(outcomeCalls[2]![1]!.body);
     expect(outcomeCalls[0]![1]!.headers).toMatchObject(
       outcomeCalls[1]![1]!.headers as Record<string, string>,
     );
+  });
+
+  it("keeps an unknown provider outcome unknown when reporting fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "allowly-customer-unknown-outbox-"));
+    const prepared = preparedResponse();
+    const fetch = fetchSequence(
+      jsonResponse(201, prepared),
+      jsonResponse(200, dispatchResponse(prepared)),
+      new Error("outcome upload unavailable"),
+    );
+    mocks.httpsRequest.mockImplementation(() => { throw new Error("connection lost"); });
+    const client = new Allowly({ apiKey: "test-key", baseUrl: "https://api.example.com", fetch });
+
+    expect(await client.executeHttp(URL, customerOptions(directory))).toMatchObject({
+      state: "unknown", outcomePending: true, response: null, providerResponse: null,
+      evidencePackage: { outcome: { targetState: "unknown" } },
+    });
+    expect(mocks.httpsRequest).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetch.mock.calls[2]![1]!.body as string)).toMatchObject({
+      target_state: "unknown",
+    });
   });
 
   it("refuses changed inputs for an existing stable operation ID", async () => {
@@ -959,7 +1009,7 @@ describe("customer-local HTTP execution", () => {
     expect(await fileExists(lockPath)).toBe(false);
   });
 
-  it("waits for native readiness, validates the trust key, then releases the dispatch gate", async () => {
+  it.each([false, true])("returns native response after dispatch with outcomePending=%s", async (outcomePending) => {
     const directory = await mkdtemp(join(tmpdir(), "allowly-customer-witness-"));
     const native = await fakeWitness(directory);
     const witnessConfigDir = join(directory, "witness", "ws_1");
@@ -1009,6 +1059,7 @@ describe("customer-local HTTP execution", () => {
             .digest("hex")}`,
           notary_attestation: { compact: true },
         });
+        if (outcomePending) return jsonResponse(503, { detail: "outcome upload unavailable" });
         return jsonResponse(201, {
           ...finalResponse(prepared),
           effective_evidence_mode: "witnessed",
@@ -1038,6 +1089,10 @@ describe("customer-local HTTP execution", () => {
     }
 
     expect(result.state).toBe("response_observed");
+    expect(result).toMatchObject({
+      outcomePending, providerResponse: { status: 200, body: Buffer.from("ok") },
+    });
+    if (outcomePending && result.state === "response_observed") expect(result.response).toBeNull();
     expect(await fileExists(join(evidenceDirectory, "dispatch.approved.json"))).toBe(true);
     expect(await fileExists(join(evidenceDirectory, "dispatch.started.json"))).toBe(true);
     expect(JSON.parse(await readFile(join(evidenceDirectory, "args.json"), "utf8")))

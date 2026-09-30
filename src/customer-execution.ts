@@ -28,6 +28,7 @@ import type {
   CustomerHeaderCommitment,
   CustomerHttpExecutionResult,
   CustomerHttpOptions,
+  CustomerHttpProviderResponse,
   CustomerHttpRequestCommitment,
   ResumeHttpExecutionRequest,
 } from "./types.js";
@@ -84,11 +85,6 @@ interface ExecutionJournal {
   outcome?: JournalOutcome;
   final_response?: CustomerExecutionResponse;
   evidence_package?: CustomerExecutionEvidencePackage;
-}
-
-interface ProviderResponse {
-  status: number;
-  body: Uint8Array;
 }
 
 interface NativeResult {
@@ -226,8 +222,9 @@ export async function executeHttp(
 
     const startedAt = dispatchStartedAt(journal);
     let outcome: CustomerExecutionOutcome;
+    let providerResponse: CustomerHttpProviderResponse | null = null;
     try {
-      const response = await sendPinnedHttps(
+      providerResponse = await sendPinnedHttps(
         request,
         pinned.address,
         pinned.family,
@@ -239,9 +236,9 @@ export async function executeHttp(
         targetState: "response_observed",
         dispatchStartedAt: startedAt,
         completedAt: new Date(),
-        httpStatus: response.status,
-        responseSha256: digest(response.body),
-        responseSize: response.body.byteLength,
+        httpStatus: providerResponse.status,
+        responseSha256: digest(providerResponse.body),
+        responseSize: providerResponse.body.byteLength,
       };
     } catch {
       outcome = {
@@ -257,7 +254,7 @@ export async function executeHttp(
       options.outcomeIdempotencyKey ?? stableId("outcome", options.operationId),
       outcome,
     );
-    return uploadStoredOutcome(client, journalPath, journal, options.agentToken);
+    return uploadStoredOutcome(client, journalPath, journal, options.agentToken, providerResponse);
   });
 }
 
@@ -541,7 +538,11 @@ async function executeWitnessed(
       options.outcomeIdempotencyKey ?? stableId("outcome", options.operationId),
       outcome,
     );
-    return uploadStoredOutcome(client, journalPath, journal, options.agentToken);
+    const providerResponse = native === null ? null : {
+      status: native.response.status,
+      body: Buffer.from(native.response.body, "utf8"),
+    };
+    return uploadStoredOutcome(client, journalPath, journal, options.agentToken, providerResponse);
   } finally {
     await stopNativeWitness(child);
   }
@@ -571,19 +572,34 @@ async function uploadStoredOutcome(
   journalPath: string,
   journal: ExecutionJournal,
   agentToken?: string,
+  providerResponse: CustomerHttpProviderResponse | null = null,
 ): Promise<CustomerHttpExecutionResult> {
   const stored = journal.outcome;
   if (stored === undefined) throw new Error("journal has no stored outcome to upload");
-  const response = await client.reportExecutionOutcome({
-    operationId: journal.operation_id,
-    idempotencyKey: stored.idempotency_key,
-    agentToken,
-    ...stored.body,
-  });
   const evidencePackage = {
     ...journal.evidence_package!,
     outcome: stored.body,
   };
+  let response: CustomerExecutionResponse;
+  try {
+    response = await client.reportExecutionOutcome({
+      operationId: journal.operation_id,
+      idempotencyKey: stored.idempotency_key,
+      agentToken,
+      ...stored.body,
+    });
+  } catch {
+    // Dispatch already happened and the outcome is durable. Never resend the
+    // provider request just because reporting could not be confirmed.
+    return {
+      state: stored.body.targetState,
+      authorization: requireAuthorization(journal),
+      response: null,
+      evidencePackage,
+      outcomePending: true,
+      providerResponse,
+    };
+  }
   const completed: ExecutionJournal = {
     ...journal,
     phase: "complete",
@@ -591,7 +607,7 @@ async function uploadStoredOutcome(
     evidence_package: evidencePackage,
   };
   await writeJournal(journalPath, completed);
-  return resultFromFinal(completed);
+  return resultFromFinal(completed, providerResponse);
 }
 
 async function reconcileAfterAmbiguousDispatch(
@@ -620,10 +636,15 @@ async function reconcileAfterAmbiguousDispatch(
     authorization,
     response,
     evidencePackage: journal.evidence_package!,
+    outcomePending: false,
+    providerResponse: null,
   };
 }
 
-function resultFromFinal(journal: ExecutionJournal): CustomerHttpExecutionResult {
+function resultFromFinal(
+  journal: ExecutionJournal,
+  providerResponse: CustomerHttpProviderResponse | null = null,
+): CustomerHttpExecutionResult {
   const authorization = requireAuthorization(journal);
   const response = journal.final_response!;
   if (authorization.decision !== "allow") return { state: "not_allowed", authorization };
@@ -632,6 +653,8 @@ function resultFromFinal(journal: ExecutionJournal): CustomerHttpExecutionResult
     authorization,
     response,
     evidencePackage: journal.evidence_package!,
+    outcomePending: false,
+    providerResponse,
   };
 }
 
@@ -819,7 +842,7 @@ async function sendPinnedHttps(
   family: 4 | 6,
   approval: Record<string, unknown>,
   timeoutMs: number,
-): Promise<ProviderResponse> {
+): Promise<CustomerHttpProviderResponse> {
   return new Promise((resolve, reject) => {
     const agent = new HttpsAgent({ keepAlive: false });
     (agent as unknown as { createConnection: (...args: any[]) => unknown }).createConnection = (

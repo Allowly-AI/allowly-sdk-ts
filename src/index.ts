@@ -35,6 +35,7 @@ export type {
   ReportExecutionOutcomeRequest,
   CustomerHttpOptions,
   CustomerExecutionEvidencePackage,
+  CustomerHttpProviderResponse,
   CustomerHttpExecutionResult,
   ResumeHttpExecutionRequest,
   OutcomeEvidence,

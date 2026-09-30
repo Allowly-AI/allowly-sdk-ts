@@ -1,5 +1,9 @@
 import { Allowly, NativeAgentCredential, commitCustomerHttpRequest } from "../index.js";
-import type { NativeAgentCredentialData } from "../index.js";
+import type {
+  CustomerHttpExecutionResult,
+  CustomerHttpProviderResponse,
+  NativeAgentCredentialData,
+} from "../index.js";
 import type {
   ActionEntry,
   CustomerExecutionResponse,
@@ -92,7 +96,7 @@ const localExecution: Promise<CustomerExecutionResponse> = client.getExecution(
 );
 void localExecution;
 
-void client.executeHttp(greenhouseCandidateListUrl, {
+const httpExecution: Promise<CustomerHttpExecutionResult> = client.executeHttp(greenhouseCandidateListUrl, {
   operationId: "greenhouse-candidates-list-page-1",
   authorizationId: "auth_123",
   enabledExecutableId: "exe_123",
@@ -106,6 +110,18 @@ void client.executeHttp(greenhouseCandidateListUrl, {
   },
   journalDirectory: "/var/lib/my-agent/allowly-executions",
 });
+void httpExecution.then((result) => {
+  if (result.state === "not_allowed") return;
+  const pending: boolean = result.outcomePending;
+  const provider: CustomerHttpProviderResponse | null = result.providerResponse;
+  const report: CustomerExecutionResponse | null = result.response;
+  void [pending, provider, report];
+});
+const resumedExecution: Promise<CustomerHttpExecutionResult> = client.resumeHttpExecution({
+  operationId: "greenhouse-candidates-list-page-1",
+  journalDirectory: "/var/lib/my-agent/allowly-executions",
+});
+void resumedExecution;
 
 void client.authorizations.create({
   userId: "user_123",

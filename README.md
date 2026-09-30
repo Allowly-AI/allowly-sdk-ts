@@ -125,8 +125,9 @@ const result = await allowly.executeHttp(
 );
 
 if (result.state === "not_allowed") return;
-if (result.state === "unknown") {
-  // Reconcile the same operation. Never send the provider request again.
+// Use result.providerResponse locally when present (status and Uint8Array body).
+if (result.outcomePending || result.state === "unknown") {
+  // Retry later when Allowly is reachable. This never sends the provider request again.
   await allowly.resumeHttpExecution({
     operationId: "greenhouse-candidates-list-page-1",
     journalDirectory: "/var/lib/my-agent/allowly-executions",
@@ -147,6 +148,17 @@ dispatch has been attempted, resume only uploads the same stored outcome or
 reconciles the same operation ID. Redirects are not followed, DNS must resolve
 only to public addresses, and the chosen address is pinned for the TLS
 connection.
+
+If outcome upload fails after dispatch, the helper returns the local result
+with `outcomePending: true` instead of throwing. `response` is `null` until an
+Allowly outcome reply is confirmed; this does not prove the server stored
+nothing. `providerResponse` contains the observed local HTTP status and body
+bytes, or `null` if no response was observed. Response bytes are not uploaded or
+stored in the journal, so resumed calls return `providerResponse: null`. Keep
+them in your own private storage if needed. Resume retries the saved report
+with the same idempotency key; it does not repeat the provider action. Approval,
+dispatch-claim, and local journal errors still fail closed. This flag is separate
+from a decision receipt waiting to be signed.
 
 The decision receipt can still be pending when the HTTP response returns.
 Finish and verify that evidence later; this does not contact the provider:
