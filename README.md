@@ -180,9 +180,17 @@ redirect follow. Use witnessed mode only when the catalog and deployed witness
 service report it available.
 
 Run `allowly setup witness` from `@allowly-ai/cli` for the same workspace before
-using witnessed execution. That interactive command installs the Rust helper and
-pins the public witness key after you compare its fingerprint with the
-authenticated workspace page. Then request witnessed mode and give the SDK a new
+using witnessed execution. The default path downloads a verified precompiled
+Rust helper. Use `allowly setup witness --build-from-source` to download reviewed
+Allowly adapter source and build it with pinned official TLSNotary libraries.
+That path needs Rust 1.95.0, Cargo, Git, Bash, and a native C build toolchain.
+Both paths verify release checksums and remain blocked until reviewed
+`witness-v0.1.0` assets are published and their manifest digest is pinned in the CLI.
+Offline setup still accepts
+`--archive FILE --sha256 HEX` or a reviewed `--helper FILE`.
+The interactive command pins the public witness key after you compare its
+fingerprint with the authenticated workspace page. Then request witnessed mode
+and give the SDK a new
 evidence directory for each operation:
 
 ```typescript
@@ -206,6 +214,12 @@ to the helper for the witness socket only. Provider HTTPS trust is unchanged.
 To use a separately provisioned helper and public key, provide both
 `witness.nativeBinaryPath` and `witness.trustedNotaryKeyPath` with the
 `witness.workspaceId` you expect.
+
+The helper and Allowly-hosted Witness Bridge source live together in
+`allowly_mcp/witness`. The helper wraps unchanged TLSNotary libraries pinned to
+`v0.1.0-alpha.15` / `47aee45b53e06648c1b2ad3689b367b8c923fdec`; it is not a
+separate TLSNotary MCP package. `@allowly/mcp` supports both evidence modes.
+Customer setup installs only the helper, not the hosted witnessing socket.
 
 ## Create an authorization
 
