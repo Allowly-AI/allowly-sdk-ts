@@ -132,7 +132,11 @@ export function clearKeysDocCache(): void {
 export async function verifyReceipt(
   receipt: Record<string, unknown>,
   publicKeys: PublicKey[],
-  opts: { expectedWorkspaceId: string; now?: Date },
+  opts: {
+    expectedWorkspaceId: string;
+    trustedKeyFingerprints?: ReadonlySet<string>;
+    now?: Date;
+  },
 ): Promise<void> {
   return verifyReceiptReference(receipt, publicKeys, opts);
 }

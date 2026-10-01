@@ -39,6 +39,200 @@ if (decision.decision === "allow") {
 Only `allow` permits execution. Unavailable checks fail closed unless that
 action has an explicit `fail_open` fallback configured.
 
+## Allowly agent identity
+
+Create the agent in the dashboard, then run `allowly agent enroll <exact-agent-id>`
+from the Allowly CLI. Store the resulting private credential on the trusted
+machine that runs the agent. Define its policy, then create a **new authorization**
+for that agent. CLI-only setups can still create a live policy before enrollment.
+The credential identifies the agent; the authorization and policy still decide
+what it may do. The workspace runtime API key is still required.
+
+```typescript
+import { Allowly, NativeAgentCredential } from "@allowly/sdk";
+
+const credential = await NativeAgentCredential.fromFile("/secure/path/agent.json");
+const allowly = new Allowly({
+  apiKey: process.env.ALLOWLY_API_KEY!,
+  agentTokenSupplier: credential.token,
+});
+
+await allowly.check({ authorizationId: "auth_...", actions: ["order.submit"] });
+```
+
+The SDK signs a fresh 60-second token for each request. The private key remains
+in your runtime; do not commit or log the credential file. The CLI registers
+only its public key with Allowly.
+
+## Existing Auth0 agent identity
+
+For an authorization bound to an Auth0 machine identity, supply its short-lived
+access token separately from the Allowly runtime key. The supplier runs for
+each check or local execution. Use your existing OAuth client library for Auth0
+token reuse and keep the client secret outside this SDK. New self-service Auth0
+setup is unavailable. Contact us to add your own identity provider.
+
+```typescript
+import { Allowly } from "@allowly/sdk";
+
+const allowly = new Allowly({
+  apiKey: process.env.ALLOWLY_API_KEY!,
+  agentTokenSupplier: getAuth0AgentToken,
+});
+
+await allowly.check({
+  authorizationId: "auth_...",
+  actions: ["order.submit"],
+  clientTimestamp: new Date(),
+});
+
+```
+
+Identity-enabled checks always fail closed, including token supplier failures
+and `identity_verification_unavailable` responses.
+
+## Execute HTTP with provider credentials kept locally
+
+Enable a provider in **Settings → Executables** and grant the exact catalog
+operation to an action before using `executeHttp`. The SDK sends a request
+descriptor and byte commitments to Allowly for approval, then sends the original
+HTTP request from your runtime. Allowly never receives provider credentials or
+sends the provider request.
+Allowly receives the method, origin, path, query, content type, byte counts, header
+names and hashes, body hash, and customer-reported policy input. Header values and
+body bytes stay local. Put provider credentials in local headers; do not put
+secrets in the URL, query, or policy input.
+
+```typescript
+const result = await allowly.executeHttp(
+  "https://harvest.greenhouse.io/v3/candidates?per_page=1&private=false",
+  {
+    operationId: "greenhouse-candidates-list-page-1", // persist and reuse this ID
+    authorizationId: "auth_...",
+    enabledExecutableId: "exe_...",
+    catalogOperationId: "greenhouse.candidates.list",
+    action: "greenhouse.candidates.list",
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${process.env.GREENHOUSE_ACCESS_TOKEN}`,
+    },
+    policyInput: {
+      resource: "greenhouse:candidates",
+      context: { pageSize: 1, includePrivate: false }, // customer-reported
+    },
+    journalDirectory: "/var/lib/my-agent/allowly-executions",
+  },
+);
+
+if (result.state === "not_allowed") return;
+// Use result.providerResponse locally when present (status and Uint8Array body).
+if (result.outcomePending || result.state === "unknown") {
+  // Retry later when Allowly is reachable. This never sends the provider request again.
+  await allowly.resumeHttpExecution({
+    operationId: "greenhouse-candidates-list-page-1",
+    journalDirectory: "/var/lib/my-agent/allowly-executions",
+  });
+}
+```
+
+This uses Greenhouse's documented Harvest v3
+[List candidates](https://harvestdocs.greenhouse.io/reference/get_v3-candidates)
+endpoint with an OAuth
+[Bearer access token](https://harvestdocs.greenhouse.io/docs/authentication). The
+GET has no request body, limits the page to one non-private candidate, and needs
+the `harvest:candidates:list` scope with a Site Admin authorizing user.
+
+The private journal stores request commitments, the approval, and a pending
+outcome upload. It does not store the provider credential or request body. Once
+dispatch has been attempted, resume only uploads the same stored outcome or
+reconciles the same operation ID. Redirects are not followed, DNS must resolve
+only to public addresses, and the chosen address is pinned for the TLS
+connection.
+
+If outcome upload fails after dispatch, the helper returns the local result
+with `outcomePending: true` instead of throwing. `response` is `null` until an
+Allowly outcome reply is confirmed; this does not prove the server stored
+nothing. `providerResponse` contains the observed local HTTP status and body
+bytes, or `null` if no response was observed. Response bytes are not uploaded or
+stored in the journal, so resumed calls return `providerResponse: null`. Keep
+them in your own private storage if needed. Resume retries the saved report
+with the same idempotency key; it does not repeat the provider action. Approval,
+dispatch-claim, and local journal errors still fail closed. This flag is separate
+from a decision receipt waiting to be signed.
+
+The decision receipt can still be pending when the HTTP response returns.
+Finish and verify that evidence later; this does not contact the provider:
+
+```typescript
+import {
+  completeCustomerExecutionEvidence,
+  fetchKeysDoc,
+  loadKeysFromJson,
+} from "@allowly/sdk";
+
+const keys = loadKeysFromJson(await fetchKeysDoc(configuredWorkspaceId));
+const completeEvidence = await completeCustomerExecutionEvidence(
+  allowly,
+  result.evidencePackage,
+  keys,
+  {
+    expectedWorkspaceId: configuredWorkspaceId,
+    trustedKeyFingerprints: configuredKeyFingerprints,
+  },
+);
+await saveEvidence(completeEvidence);
+```
+
+`receipt` evidence records the customer runtime's reported HTTP outcome. It
+does not verify business completion. If the policy upgrades the request to
+`witnessed`, `executeHttp` fails closed unless native witness options were
+provided. The current native profile is limited to HTTPS on port 443, HTTP/1.1
+over TLS 1.2, a 2 KiB request transcript, a 16 KiB UTF-8 response, and no
+redirect follow. Use witnessed mode only when the catalog and deployed witness
+service report it available.
+
+Run `allowly setup witness` from `@allowly-ai/cli` for the same workspace before
+using witnessed execution. The default path downloads a verified precompiled
+Rust helper. Use `allowly setup witness --build-from-source` to download reviewed
+Allowly adapter source and build it with pinned official TLSNotary libraries.
+That path needs Rust 1.95.0, Cargo, Git, Bash, and a native C build toolchain.
+Both paths verify release checksums and remain blocked until reviewed
+`witness-v0.1.0` assets are published and their manifest digest is pinned in the CLI.
+Offline setup still accepts
+`--archive FILE --sha256 HEX` or a reviewed `--helper FILE`.
+The interactive command pins the public witness key after you compare its
+fingerprint with the authenticated workspace page. Then request witnessed mode
+and give the SDK a new
+evidence directory for each operation:
+
+```typescript
+await allowly.executeHttp("https://api.vendor.example/v1/items", {
+  operationId: "items-read-1",
+  authorizationId: "auth_...",
+  enabledExecutableId: "exe_...",
+  catalogOperationId: "vendor.items.list",
+  action: "vendor.items.list",
+  evidenceMode: "witnessed",
+  journalDirectory: "/var/lib/my-agent/allowly-executions",
+  witness: { evidenceDirectory: "/var/lib/my-agent/allowly-evidence/items-read-1" },
+});
+```
+
+The SDK selects the installed configuration by the approved workspace ID and
+checks the pinned key against the witness session before it starts the helper.
+For a local witness with a private CA, `allowly setup witness --witness-ca-cert`
+also pins that CA. The SDK checks its fingerprint before dispatch and passes it
+to the helper for the witness socket only. Provider HTTPS trust is unchanged.
+To use a separately provisioned helper and public key, provide both
+`witness.nativeBinaryPath` and `witness.trustedNotaryKeyPath` with the
+`witness.workspaceId` you expect.
+
+The helper and Allowly-hosted Witness Bridge source live together in
+`allowly_mcp/witness`. The helper wraps unchanged TLSNotary libraries pinned to
+`v0.1.0-alpha.15` / `47aee45b53e06648c1b2ad3689b367b8c923fdec`; it is not a
+separate TLSNotary MCP package. `@allowly/mcp` supports both evidence modes.
+Customer setup installs only the helper, not the hosted witnessing socket.
+
 ## Create an authorization
 
 Create one authorization for the subject and store its ID in your application:

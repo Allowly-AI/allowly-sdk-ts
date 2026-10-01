@@ -1,12 +1,44 @@
 export { Allowly, AllowlyTransportError } from "./client.js";
+export { NativeAgentCredential } from "./agent-identity.js";
+export type { NativeAgentCredentialData } from "./agent-identity.js";
 export { SealWebhookClient } from "./seal-webhook.js";
+export {
+  commitCustomerHttpRequest,
+  completeCustomerExecutionEvidence,
+} from "./customer-execution.js";
 export { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
 export * as identifiers from "./identifiers.js";
 export * from "./verify.js";
 export type {
   AllowlyOptions,
+  CustomExecutableCreateRequest,
+  EnabledExecutableResponse,
+  ExecutableOperation,
+  ExecutableEvidenceCapability,
   BudgetInfo,
   BudgetSettlementResponse,
+  PrepareExecutionRequest,
+  CustomerEvidenceMode,
+  CustomerHeaderCommitment,
+  CustomerHttpRequestCommitment,
+  CustomerPolicyInput,
+  CustomerExecutionRequestDescriptor,
+  CustomerExecutionWitnessSession,
+  CustomerExecutionDownstream,
+  CustomerExecutionStatus,
+  CustomerExecutionResponse,
+  ClaimExecutionDispatchRequest,
+  ClaimExecutionDispatchResponse,
+  GetExecutionWitnessTokenRequest,
+  ExecutionWitnessTokenResponse,
+  CustomerExecutionOutcome,
+  ReportExecutionOutcomeRequest,
+  CustomerHttpOptions,
+  CustomerExecutionEvidencePackage,
+  CustomerHttpProviderResponse,
+  CustomerHttpExecutionResult,
+  ResumeHttpExecutionRequest,
+  OutcomeEvidence,
   EscalationInfo,
   EscalationResolveRequest,
   EscalationResolveResponse,
@@ -24,6 +56,8 @@ export type {
   ReceiptEnvelope,
   ReceiptEnvelopePending,
   ReceiptEnvelopeSigned,
+  ReceiptAcknowledgmentRequest,
+  ReceiptAcknowledgmentResponse,
   SealRequest,
   SealResponse,
   SealWebhookClientOptions,
@@ -32,5 +66,6 @@ export type {
   Decision,
   FallbackMode,
   ActionEntry,
+  ExecutableOperationGrant,
   AllowlyError,
 } from "./types.js";
