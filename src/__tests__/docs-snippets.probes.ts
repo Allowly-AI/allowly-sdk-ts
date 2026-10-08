@@ -26,6 +26,21 @@ export async function docsVerifySnippet(receiptId: string): Promise<void> {
   await client.receipts.fetchSigned(receiptId, { pollInterval: 2, timeout: 180 });
 }
 
+export async function docsConfirmationSnippet(nonce: string, approved: boolean): Promise<void> {
+  const client = new Allowly({ apiKey: "allowly_l1_s001_..." });
+  const resolution = await client.confirmations.approve(nonce, { approved, idempotencyKey: "confirmation-1" });
+  if (resolution.decision === "approved") {
+    const childAuthorizationId: string = resolution.authorizationId;
+    void childAuthorizationId;
+  } else {
+    const childAuthorizationId: null = resolution.authorizationId;
+    const declined: "not_approved" | "denied_by_user" = resolution.decision;
+    void childAuthorizationId;
+    void declined;
+  }
+  if (resolution.receipt) await client.receipts.fetchSigned(resolution.receipt.receiptId);
+}
+
 export async function docsSealWebhookSnippet(rawJson: string, eventId: string): Promise<void> {
   const webhook = new SealWebhookClient(process.env.ALLOWLY_SEAL_WEBHOOK_URL!);
   let delivery = await webhook.send(rawJson, {

@@ -1150,23 +1150,48 @@ describe("Allowly.confirmations", () => {
     });
     expect(res.decision).toBe("approved");
     expect(res.authorizationId).toBe("auth_xyz");
+    expect(res.receipt).toBeNull();
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "confirm-1" });
   });
 
-  it("handles denied_by_user", async () => {
+  it.each(["not_approved", "denied_by_user"])("handles %s", async (decision) => {
     const fetch = makeFetch(200, {
-      decision: "denied_by_user",
+      decision,
       authorization_id: null,
       expires_at: null,
+      receipt: null,
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const res = await client.confirmations.approve("nonce123", { approved: false });
-    expect(res.decision).toBe("denied_by_user");
+    expect(res.decision).toBe(decision);
+    expect(res.receipt).toBeNull();
+  });
+
+  it.each(["approved", "not_approved"])("returns a pending receipt for %s", async (decision) => {
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, {
+      decision,
+      authorization_id: decision === "approved" ? "auth_xyz" : null,
+      expires_at: decision === "approved" ? "2026-04-20T00:01:00Z" : null,
+      receipt: { ...PENDING_RECEIPT, ready_at_estimate: null },
+    }) });
+    const res = await client.confirmations.approve("nonce123", { approved: decision === "approved" });
+    expect(res.receipt).toMatchObject({ receiptId: "rcp_abc", readyAtEstimate: null });
+  });
+
+  it.each([{ status: "signed" }, {}, false])("rejects malformed resolution receipts", async (receipt) => {
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, {
+      decision: "not_approved", authorization_id: null, expires_at: null, receipt,
+    }) });
+    await expect(client.confirmations.approve("nonce123", { approved: false }))
+      .rejects.toThrow(AllowlyProtocolError);
   });
 
   it.each([
     { decision: "approved", authorization_id: "auth_xyz" },
+    { decision: "unknown", authorization_id: null, expires_at: null },
+    { decision: "not_approved", authorization_id: null },
+    { decision: "not_approved", authorization_id: "auth_xyz", expires_at: null },
     { decision: "denied_by_user", authorization_id: null },
     { decision: "denied_by_user", authorization_id: "auth_xyz", expires_at: null },
   ])("requires decision-specific confirmation fields", async (body) => {

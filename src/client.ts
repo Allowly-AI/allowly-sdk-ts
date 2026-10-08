@@ -750,20 +750,25 @@ class ConfirmationsResource {
       },
     );
     const decision = requireString(raw, "decision");
-    if (decision !== "approved" && decision !== "denied_by_user") {
+    if (decision !== "approved" && decision !== "not_approved" && decision !== "denied_by_user") {
       throw new AllowlyProtocolError(`unknown confirmation decision: ${JSON.stringify(decision)}`);
     }
+    const receipt = raw.receipt === undefined || raw.receipt === null
+      ? null
+      : parsePendingEnvelope(raw.receipt);
     if (decision === "approved") {
       return {
         decision,
         authorizationId: requireString(raw, "authorization_id"),
         expiresAt: requireString(raw, "expires_at"),
+        receipt,
       };
     }
     return {
       decision,
       authorizationId: requireNull(raw, "authorization_id"),
       expiresAt: requireNull(raw, "expires_at"),
+      receipt,
     };
   }
 }
