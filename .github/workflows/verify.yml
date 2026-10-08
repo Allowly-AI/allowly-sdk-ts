@@ -15,36 +15,15 @@ jobs:
     steps:
       - name: Check out TypeScript SDK
         uses: actions/checkout@v4
-        with:
-          path: allowly-sdk-ts
-      - name: Check out pinned verifier source
-        uses: actions/checkout@v4
-        with:
-          repository: Allowly-AI/allowly-receipt-format
-          ref: e690db54f20d56d3340addcd1dbd00c4f2befab0
-          path: allowly-receipt-format
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: |
-            allowly-receipt-format/verifiers/typescript/package-lock.json
-            allowly-sdk-ts/package-lock.json
-      - name: Install verifier dependencies
-        working-directory: allowly-receipt-format/verifiers/typescript
-        run: npm ci
-      - name: Build pinned verifier
-        working-directory: allowly-receipt-format/verifiers/typescript
-        run: npm run build
       - name: Install SDK dependencies
-        working-directory: allowly-sdk-ts
         run: npm ci
       - name: Typecheck SDK
-        working-directory: allowly-sdk-ts
         run: npm run typecheck
       - name: Test SDK
-        working-directory: allowly-sdk-ts
         run: npm test
       - name: Build SDK
-        working-directory: allowly-sdk-ts
         run: npm run build
