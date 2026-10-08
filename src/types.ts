@@ -564,9 +564,10 @@ export interface ConfirmationApproveRequest {
   idempotencyKey?: string;
 }
 
-export type ConfirmationApproveResponse =
+export type ConfirmationApproveResponse = (
   | { decision: "approved"; authorizationId: string; expiresAt: string }
-  | { decision: "denied_by_user"; authorizationId: null; expiresAt: null };
+  | { decision: "not_approved" | "denied_by_user"; authorizationId: null; expiresAt: null }
+) & { receipt?: ReceiptEnvelopePending | null };
 
 export interface EscalationResolveRequest {
   resolution: "approved" | "rejected";

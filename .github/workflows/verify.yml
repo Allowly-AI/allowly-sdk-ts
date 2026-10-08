@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Allowly-AI/allowly-receipt-format
-          ref: 4b88d97f7b94f659229c8acaa865f1e924f48f8f
+          ref: e690db54f20d56d3340addcd1dbd00c4f2befab0
           path: allowly-receipt-format
       - uses: actions/setup-node@v4
         with:

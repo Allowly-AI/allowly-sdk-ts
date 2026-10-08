@@ -5,6 +5,24 @@ runs, handle allow/deny/confirm/escalate decisions, and verify signed receipts.
 
 Requires Node.js 20 or newer. This package is ESM-only.
 
+## Confirmation receipts on this feature branch
+
+Confirmation responses expose `receipt`, a pending resolution envelope or
+`null` for an older runtime/replay. The decision is `approved` or
+`not_approved`; `denied_by_user` remains accepted for older runtimes. Poll
+`client.receipts.fetchSigned(response.receipt.receiptId)` when a receipt is
+present, then verify it with your configured workspace and trusted keys.
+The signature authenticates the recorded client report, not a named human's
+identity or approval. Resolution does not dispatch an action; re-check with
+the original authorization before executing.
+
+This branch requires verifier 4.3.0 and uses a sibling `file:` dev dependency
+for local tests. SDK version remains 0.6.0 here. Before a package or standalone
+production build, publish both verifier packages, remove the local verifier
+dev dependency, and regenerate `package-lock.json` against the registry.
+The public dependency stays `^4.3.0`; the local-source lock is not a production
+release.
+
 ## Install
 
 ```bash
