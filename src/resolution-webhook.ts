@@ -34,7 +34,8 @@ function signingKey(secret: string): Buffer {
 
 /** Authenticate exact UTF-8 bytes before parsing. `now` uses Unix seconds.
  * Persist event IDs to prevent duplicate processing. This notification is not
- * execution permission or a portable signed receipt; run a fresh GET and check. */
+ * execution permission or a portable signed receipt. Read current status, then
+ * use native Continue for the saved Execute or a fresh Check for standalone Check. */
 export function verifyResolutionWebhook(
   rawBody: Uint8Array,
   headers: Record<string, string> | Headers,

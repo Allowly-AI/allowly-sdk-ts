@@ -20,6 +20,8 @@ import type {
   AuthorizationRevokeResponse,
   ConfirmationApproveRequest,
   ConfirmationApproveResponse,
+  ConfirmationStatusResponse,
+  EscalationStatusResponse,
   ConfirmationStatus,
   BudgetInfo,
   BudgetSettlementResponse,
@@ -31,6 +33,7 @@ import type {
   EscalationStatus,
   PromptStatus,
   PrepareExecutionRequest,
+  ContinueExecutionRequest,
   CustomerExecutionResponse,
   ClaimExecutionDispatchRequest,
   ClaimExecutionDispatchResponse,
@@ -50,6 +53,7 @@ import type {
 } from "./types.js";
 import {
   executeHttp as executeCustomerHttp,
+  continueHttpExecution as continueCustomerHttpExecution,
   resumeHttpExecution as resumeCustomerHttpExecution,
 } from "./customer-execution.js";
 
@@ -114,6 +118,12 @@ export class Allowly {
     this.escalations = new EscalationsResource(this);
     this.receipts = new ReceiptsResource(this);
     this.resolutionWebhook = new ResolutionWebhookResource(this);
+  }
+
+  /** Runtime readiness only; does not test policy or provider permission. */
+  async readiness(): Promise<boolean> {
+    const raw = requireRecord(await this.request<unknown>("GET", "/readyz"), "readiness response");
+    return requireString(raw, "status") === "ready";
   }
 
   /** @internal */
@@ -414,20 +424,27 @@ export class Allowly {
     const raw = await this.request<Record<string, unknown>>(
       "POST",
       "/v1/execute",
+      serializeExecutionRequest(req),
       {
-        operation_id: req.operationId,
-        authorization_id: req.authorizationId,
-        enabled_executable_id: req.enabledExecutableId,
-        catalog_operation_id: req.catalogOperationId,
-        action: req.action,
-        evidence_mode: req.evidenceMode,
-        http_request: serializeCustomerHttpCommitment(req.httpRequest),
-        policy_input: {
-          resource: req.policyInput?.resource ?? null,
-          context: req.policyInput?.context ?? {},
-          estimated_cost_micros: req.policyInput?.estimatedCostMicros ?? null,
-        },
-        client_timestamp: clientTimestamp(req.clientTimestamp),
+        headers: await this.identityHeaders(req.agentToken, req.idempotencyKey),
+        expectedStatus: [200, 201],
+      },
+    );
+    const response = parseCustomerExecutionResponse(raw);
+    validateExecutionResponseScope(response, req);
+    return response;
+  }
+
+  /** Continue a waiting operation; approval alone never sends private bytes. */
+  async continueExecution(req: ContinueExecutionRequest): Promise<CustomerExecutionResponse> {
+    const original = req.executionRequest;
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      `/v1/executions/${encodeURIComponent(original.operationId)}/continue`,
+      {
+        execution_request: serializeExecutionRequest(original),
+        review_id: req.reviewId,
+        source_receipt_id: req.sourceReceiptId,
       },
       {
         headers: await this.identityHeaders(req.agentToken, req.idempotencyKey),
@@ -435,12 +452,7 @@ export class Allowly {
       },
     );
     const response = parseCustomerExecutionResponse(raw);
-    if (response.operationId !== req.operationId
-        || response.destinationId !== req.enabledExecutableId
-        || response.requestDescriptor.authorizationId !== req.authorizationId
-        || response.requestDescriptor.action !== req.action) {
-      throw new AllowlyProtocolError("customer execution response does not match the request");
-    }
+    validateExecutionResponseScope(response, original);
     return response;
   }
 
@@ -510,6 +522,13 @@ export class Allowly {
     options: CustomerHttpOptions,
   ): Promise<CustomerHttpExecutionResult> {
     return executeCustomerHttp(this, url, options);
+  }
+
+  async continueHttpExecution(
+    url: string | URL,
+    options: CustomerHttpOptions,
+  ): Promise<CustomerHttpExecutionResult> {
+    return continueCustomerHttpExecution(this, url, options);
   }
 
   async resumeHttpExecution(
@@ -744,15 +763,16 @@ class AuthorizationsResource {
 class ConfirmationsResource {
   constructor(private readonly client: Allowly) {}
 
+  async getStatus(confirmationId: string): Promise<ConfirmationStatusResponse> {
+    requirePromptId(confirmationId, "confirmation");
+    return parseConfirmationStatus(await this.client.request<unknown>(
+      "GET", `/v1/confirmations/${encodeURIComponent(confirmationId)}/status`,
+    ), confirmationId);
+  }
+
   /** Read an opaque cnf_ ID from check, never the approval nonce. */
   async get(confirmationId: string): Promise<ConfirmationStatus> {
-    if (typeof confirmationId !== "string" || !/^cnf_[A-Za-z0-9_-]+$/.test(confirmationId)) {
-      throw new Error("confirmationId must be an opaque cnf_ ID, not an approval nonce");
-    }
-    const raw = await this.client.request<unknown>(
-      "GET", `/v1/confirmations/${encodeURIComponent(confirmationId)}/status`,
-    );
-    return parseConfirmationStatus(raw, confirmationId);
+    return this.getStatus(confirmationId);
   }
 
   async approve(nonce: string, req: ConfirmationApproveRequest): Promise<ConfirmationApproveResponse> {
@@ -793,12 +813,16 @@ class ConfirmationsResource {
 class EscalationsResource {
   constructor(private readonly client: Allowly) {}
 
-  /** Read the recorded choice and grant lifecycle; re-check before acting. */
-  async get(escalationId: string): Promise<EscalationStatus> {
-    const raw = await this.client.request<unknown>(
+  async getStatus(escalationId: string): Promise<EscalationStatusResponse> {
+    requirePromptId(escalationId, "escalation");
+    return parseEscalationStatus(await this.client.request<unknown>(
       "GET", `/v1/escalations/${encodeURIComponent(escalationId)}`,
-    );
-    return parseEscalationStatus(raw, escalationId);
+    ), escalationId);
+  }
+
+  /** Read the recorded choice and grant lifecycle; this does not authorize dispatch. */
+  async get(escalationId: string): Promise<EscalationStatus> {
+    return this.getStatus(escalationId);
   }
 
   async resolve(escalationId: string, req: EscalationResolveRequest): Promise<EscalationResolveResponse> {
@@ -1252,6 +1276,12 @@ function validateSealReceipt(
   }
 }
 
+function requirePromptId(id: string, kind: "confirmation" | "escalation"): void {
+  if (typeof id !== "string" || !(kind === "confirmation" ? /^cnf_[A-Za-z0-9_-]+$/ : /^esc_[A-Za-z0-9_-]+$/).test(id)) {
+    throw new Error(`Use the opaque review ID (${kind === "confirmation" ? "opaque cnf_" : "opaque esc_"} ID), never a confirmation nonce`);
+  }
+}
+
 function requireString(raw: Record<string, unknown>, key: string): string {
   const value = raw[key];
   if (typeof value !== "string") {
@@ -1424,6 +1454,38 @@ function serializeCustomerHttpCommitment(
   };
 }
 
+function serializeExecutionRequest(
+  req: Omit<PrepareExecutionRequest, "idempotencyKey" | "agentToken">,
+): Record<string, unknown> {
+  return {
+    operation_id: req.operationId,
+    authorization_id: req.authorizationId,
+    enabled_executable_id: req.enabledExecutableId,
+    catalog_operation_id: req.catalogOperationId,
+    action: req.action,
+    evidence_mode: req.evidenceMode,
+    http_request: serializeCustomerHttpCommitment(req.httpRequest),
+    policy_input: {
+      resource: req.policyInput?.resource ?? null,
+      context: req.policyInput?.context ?? {},
+      estimated_cost_micros: req.policyInput?.estimatedCostMicros ?? null,
+    },
+    client_timestamp: clientTimestamp(req.clientTimestamp),
+  };
+}
+
+function validateExecutionResponseScope(
+  response: CustomerExecutionResponse,
+  req: Omit<PrepareExecutionRequest, "idempotencyKey" | "agentToken">,
+): void {
+  if (response.operationId !== req.operationId
+      || response.destinationId !== req.enabledExecutableId
+      || response.requestDescriptor.authorizationId !== req.authorizationId
+      || response.requestDescriptor.action !== req.action) {
+    throw new AllowlyProtocolError("customer execution response does not match the request");
+  }
+}
+
 function parseHeaderCommitments(value: unknown): import("./types.js").CustomerHeaderCommitment[] {
   if (!Array.isArray(value)) {
     throw new AllowlyProtocolError("customer request headers must be an array");
@@ -1445,6 +1507,7 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
   const status = requireString(raw, "status");
   const statuses: import("./types.js").CustomerExecutionStatus[] = [
     "denied",
+    "waiting_for_review",
     "confirmation_required",
     "escalation_required",
     "approved",
@@ -1548,6 +1611,28 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
   const approval = raw.approval === undefined || raw.approval === null
     ? null
     : requireRecord(raw.approval, "customer execution approval");
+  const decisionReceipt = parseReceiptEnvelope(raw.decision_receipt);
+  let review: import("./types.js").CustomerExecutionReview | null = null;
+  if (raw.review !== undefined && raw.review !== null) {
+    const item = requireRecord(raw.review, "customer execution review");
+    const kind = requireString(item, "kind");
+    const id = requireString(item, "id");
+    const expiresAt = requireString(item, "expires_at");
+    if ((kind !== "confirm" && kind !== "escalate")
+        || !id.startsWith(kind === "confirm" ? "cnf_" : "esc_")
+        || Number.isNaN(Date.parse(expiresAt))) {
+      throw new AllowlyProtocolError("invalid customer execution review");
+    }
+    review = { kind, id, sourceReceiptId: requireString(item, "source_receipt_id"), expiresAt };
+  }
+  if (status === "waiting_for_review"
+      && (review === null || review.kind !== decision
+        || review.sourceReceiptId !== (decisionReceipt.status === "pending"
+          ? decisionReceipt.receiptId : decisionReceipt.receipt.receipt_id)
+        || decisionState !== "not_allowed" || targetState !== "not_started"
+        || approval !== null || downstream !== null || evidenceState !== "pending")) {
+    throw new AllowlyProtocolError("waiting customer execution is not bound to a review");
+  }
   return {
     operationId,
     status: status as import("./types.js").CustomerExecutionStatus,
@@ -1558,7 +1643,7 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
     requestFingerprintProfile,
     requestFingerprint: requireString(raw, "request_fingerprint"),
     requestDescriptor,
-    decisionReceipt: parseReceiptEnvelope(raw.decision_receipt),
+    decisionReceipt,
     effectiveEvidenceMode,
     decisionState,
     targetState: targetState as CustomerExecutionResponse["targetState"],
@@ -1571,6 +1656,8 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
     outcomeEvidence: raw.outcome_evidence === undefined || raw.outcome_evidence === null
       ? null
       : parseOutcomeEvidence(raw.outcome_evidence),
+    review,
+    confirmationId: optionalString(raw, "confirmation_id"),
     confirmNonce: optionalString(raw, "confirm_nonce"),
     confirmExpiresAt: optionalString(raw, "confirm_expires_at"),
     confirmPromptHint: optionalString(raw, "confirm_prompt_hint"),

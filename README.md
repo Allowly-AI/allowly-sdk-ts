@@ -13,29 +13,33 @@ Confirmation responses expose `receipt`, a pending resolution envelope or
 `client.receipts.fetchSigned(response.receipt.receiptId)` when a receipt is
 present, then verify it with your configured workspace and trusted keys.
 The signature authenticates the recorded client report, not a named human's
-identity or approval. Resolution does not dispatch an action; re-check with
-the original authorization before executing.
+identity or approval. Resolution does not dispatch an action. A standalone
+Check needs a fresh Check with the original authorization. A saved native
+Execute uses Continue, which validates current policy within the same operation.
 
-SDK 0.6.1 uses `@allowly/verifier ^4.3.0` from npm to verify
+SDK 0.7.0 requires `@allowly/verifier ^4.3.1` to verify
 `confirmation.resolve` receipts on wire format 4.
 
 ## Confirmation and escalation status
 
 ```typescript
 // confirmationId comes from a confirm check result. It is not confirmNonce.
-const confirmation = await client.confirmations.get(confirmationId);
-const escalation = await client.escalations.get(escalationId);
+const confirmation = await client.confirmations.getStatus(confirmationId);
+const escalation = await client.escalations.getStatus(escalationId);
 console.log(confirmation.status, confirmation.authorityStatus);
 console.log(escalation.status, escalation.authorityStatus);
 ```
 
-Each `get` makes one authenticated read. Repeat it in your application's own
+Each `getStatus` makes one authenticated read. The older `get` methods remain
+compatible aliases. Repeat the read in your application's own
 bounded polling loop if needed. The prompt `status` is `pending`, `approved`,
 `rejected`, `expired`, or `unknown`; `unknown` means a legacy record does not
 show the choice. An approved choice stays approved after its grant expires,
 is revoked, or (for escalations) is consumed. `authorityStatus: "available"`
-is a lifecycle snapshot. Make a fresh `client.check(...)` with the original
-authorization and execute only an `allow`. These reads never execute actions,
+is a lifecycle snapshot, not execution permission. A standalone Check flow
+makes a fresh `client.check(...)` with the original authorization and acts only
+on `allow`. A saved native Execute calls Continue with the same operation and
+request, without a separate enforcing Check. These reads never execute actions,
 consume approval, or create receipts. Nullable receipt IDs refer to existing
 records. Older check responses may omit `confirmationId`.
 
@@ -78,8 +82,10 @@ and a fixed 300-second attempt timestamp tolerance. Each retry preserves the
 event ID and body, with a fresh signed attempt timestamp. Store `event.id`
 durably and process it once. The shared-secret signature authenticates this
 notification for your receiver; it is not a portable audit receipt or permission
-to execute. Read the current prompt status, then make a fresh check before
-running an action. The helper throws `AllowlyProtocolError` for invalid messages.
+to execute. Bind the prompt and source receipt to your saved job and read the
+current status. A saved native Execute calls Continue; a standalone Check flow
+makes a fresh Check before acting. The helper throws `AllowlyProtocolError`
+for invalid messages.
 
 ## Install
 
@@ -200,7 +206,7 @@ const result = await allowly.executeHttp(
   },
 );
 
-if (result.state === "not_allowed") return;
+if (result.state === "not_allowed" || result.state === "waiting_for_review") return;
 // Use result.providerResponse locally when present (status and Uint8Array body).
 if (result.outcomePending || result.state === "unknown") {
   // Retry later when Allowly is reachable. This never sends the provider request again.
@@ -217,6 +223,40 @@ endpoint with an OAuth
 [Bearer access token](https://harvestdocs.greenhouse.io/docs/authentication). The
 GET has no request body, limits the page to one non-private candidate, and needs
 the `harvest:candidates:list` scope with a Site Admin authorizing user.
+
+For a confirm or escalate decision, `executeHttp` returns
+`state: "waiting_for_review"` with the opaque `review.id`, its kind, source
+receipt ID, and expiry. Save the original URL, headers, body, and policy inputs
+in your own protected storage. The SDK journal does not store these private
+request bytes. A verified resolution webhook can wake your job, or you can poll
+the approval status. Neither the webhook nor the human choice is permission to
+send the request.
+
+After resolution, reconstruct the **same** request and call
+`allowly.continueHttpExecution(originalUrl, originalOptions)`. It loads the
+review and original timestamp from the durable journal, asks Allowly to validate
+the review and current permission, then uses the normal dispatch claim. A pending
+review returns `waiting_for_review`; a rejected, expired, or revoked review
+cannot dispatch. Replaying `executeHttp` or calling `resumeHttpExecution` does
+not continue a waiting review. Use the explicit continuation helper.
+
+The low-level equivalent is `continueExecution({ executionRequest, reviewId,
+sourceReceiptId, idempotencyKey })`. `executionRequest` must be the original
+`prepareExecution` request, including the original timestamp, but without its
+prepare idempotency key or agent token. Keep the continuation key stable across
+retries. This method returns the policy result; it does not contact the provider.
+
+For bounded polling, use `allowly.confirmations.getStatus(confirmationId)` or
+`allowly.escalations.getStatus(escalationId)`. Pass the opaque `cnf_`/`esc_` review
+ID, never a confirmation nonce. `status` records the choice; `authorityStatus`
+reports whether its grant is still available. Match the source receipt and
+original request before waking your saved job, then call Continue. Status alone
+does not permit execution. `await allowly.readiness()` tests `/readyz` only,
+not policy or provider permission.
+
+Resolution webhook configuration is shared by one Allowly workspace.
+Coordinate with existing consumers before changing its single callback URL or
+signing key.
 
 The private journal stores request commitments, the approval, and a pending
 outcome upload. It does not store the provider credential or request body. Once

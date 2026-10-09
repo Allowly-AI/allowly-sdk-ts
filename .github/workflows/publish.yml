@@ -27,10 +27,10 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-      - name: Require public verifier 4.3.0
+      - name: Require public verifier 4.3.1
         run: |
-          published_version="$(npm view @allowly/verifier@4.3.0 version --registry=https://registry.npmjs.org)"
-          test "$published_version" = "4.3.0"
+          published_version="$(npm view @allowly/verifier@4.3.1 version --registry=https://registry.npmjs.org)"
+          test "$published_version" = "4.3.1"
       - name: Require registry-backed verifier lock
         run: |
           node --input-type=module <<'NODE'
@@ -45,10 +45,10 @@ jobs:
             process.exit(1);
           };
 
-          if (packageJson.dependencies?.["@allowly/verifier"] !== "^4.3.0") {
-            fail("package.json must require @allowly/verifier ^4.3.0");
+          if (packageJson.dependencies?.["@allowly/verifier"] !== "^4.3.1") {
+            fail("package.json must require @allowly/verifier ^4.3.1");
           }
-          if (root?.dependencies?.["@allowly/verifier"] !== "^4.3.0") {
+          if (root?.dependencies?.["@allowly/verifier"] !== "^4.3.1") {
             fail("package-lock.json root metadata is not synchronized with package.json");
           }
           for (const [location, spec] of [
@@ -63,8 +63,8 @@ jobs:
             key.includes("allowly-receipt-format/verifiers/typescript"))) {
             fail("package-lock.json still contains the local verifier package");
           }
-          if (!verifier || verifier.link === true || verifier.version !== "4.3.0") {
-            fail("package-lock.json must contain a non-link @allowly/verifier 4.3.0 entry");
+          if (!verifier || verifier.link === true || verifier.version !== "4.3.1") {
+            fail("package-lock.json must contain a non-link @allowly/verifier 4.3.1 entry");
           }
           if (typeof verifier.resolved !== "string") {
             fail("the verifier lock entry has no registry tarball URL");
@@ -73,7 +73,7 @@ jobs:
           if (
             resolved.protocol !== "https:" ||
             resolved.hostname !== "registry.npmjs.org" ||
-            !resolved.pathname.endsWith("/verifier-4.3.0.tgz")
+            !resolved.pathname.endsWith("/verifier-4.3.1.tgz")
           ) {
             fail("the verifier lock entry is not backed by the public npm registry");
           }

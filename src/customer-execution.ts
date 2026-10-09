@@ -30,6 +30,7 @@ import type {
   CustomerHttpOptions,
   CustomerHttpProviderResponse,
   CustomerHttpRequestCommitment,
+  PrepareExecutionRequest,
   ResumeHttpExecutionRequest,
 } from "./types.js";
 import { hashSealValue, verifyReceipt } from "./verify.js";
@@ -77,9 +78,10 @@ interface ExecutionJournal {
   version: 1;
   operation_id: string;
   request_sha256: string;
-  phase: "prepared" | "authorized" | "dispatch_attempted" | "outcome_pending" | "complete";
+  phase: "prepared" | "waiting_for_review" | "authorized" | "dispatch_attempted" | "outcome_pending" | "complete";
   prepare_client_timestamp?: string;
   prepare_idempotency_key?: string;
+  continue_idempotency_key?: string;
   authorization?: CustomerExecutionResponse;
   dispatch_attempted_at?: string;
   outcome?: JournalOutcome;
@@ -126,6 +128,24 @@ export async function executeHttp(
   url: string | URL,
   options: CustomerHttpOptions,
 ): Promise<CustomerHttpExecutionResult> {
+  return executeCustomerHttp(client, url, options, false);
+}
+
+/** Continue a reviewed operation using the exact original, customer-held request. */
+export async function continueHttpExecution(
+  client: Allowly,
+  url: string | URL,
+  options: CustomerHttpOptions,
+): Promise<CustomerHttpExecutionResult> {
+  return executeCustomerHttp(client, url, options, true);
+}
+
+async function executeCustomerHttp(
+  client: Allowly,
+  url: string | URL,
+  options: CustomerHttpOptions,
+  continueReview: boolean,
+): Promise<CustomerHttpExecutionResult> {
   const request = commitHttpRequest(url, options);
   const requestSha256 = journalRequestSha256(request, options);
   const journalPath = operationJournalPath(options.journalDirectory, options.operationId);
@@ -135,11 +155,17 @@ export async function executeHttp(
     let authorization: CustomerExecutionResponse;
     if (existing !== null) {
       assertJournalIdentity(existing, options.operationId, requestSha256);
-      if (existing.phase !== "prepared" && existing.phase !== "authorized") {
+      if (continueReview && existing.phase !== "waiting_for_review"
+          && typeof existing.continue_idempotency_key !== "string") {
+        throw new Error("operation is not waiting for review and has no continuation intent");
+      }
+      if (existing.phase !== "prepared" && existing.phase !== "authorized"
+          && !(continueReview && existing.phase === "waiting_for_review")) {
         return resumeJournal(client, journalPath, existing, options.agentToken);
       }
       journal = existing;
     } else {
+      if (continueReview) throw new Error("no durable journal exists for this operation ID");
       journal = {
         version: JOURNAL_VERSION,
         operation_id: options.operationId,
@@ -151,24 +177,52 @@ export async function executeHttp(
       await writeJournal(journalPath, journal);
     }
 
-    if (journal.phase === "prepared") {
+    if (journal.phase === "prepared" || journal.phase === "waiting_for_review") {
       if (typeof journal.prepare_client_timestamp !== "string"
           || typeof journal.prepare_idempotency_key !== "string") {
         throw new Error("prepared journal lacks retry inputs; reconcile with the low-level API");
       }
-      authorization = await client.prepareExecution({
-        operationId: options.operationId,
-        authorizationId: options.authorizationId,
-        enabledExecutableId: options.enabledExecutableId,
-        catalogOperationId: options.catalogOperationId,
-        action: options.action,
-        evidenceMode: options.evidenceMode ?? "receipt",
-        httpRequest: request.commitment,
-        policyInput: options.policyInput,
-        clientTimestamp: journal.prepare_client_timestamp,
-        idempotencyKey: journal.prepare_idempotency_key,
-        agentToken: options.agentToken,
-      });
+      const executionRequest = originalPrepareRequest(request, options, journal);
+      if (journal.phase === "waiting_for_review") {
+        const waiting = requireAuthorization(journal);
+        validateWaitingResponse(waiting, request, options);
+        const review = waiting.review!;
+        journal = {
+          ...journal,
+          continue_idempotency_key: stableId(
+            "continue", stableJson([options.operationId, review.id, review.sourceReceiptId]),
+          ),
+        };
+        await writeJournal(journalPath, journal);
+        authorization = await client.continueExecution({
+          executionRequest,
+          reviewId: review.id,
+          sourceReceiptId: review.sourceReceiptId,
+          idempotencyKey: journal.continue_idempotency_key!,
+          agentToken: options.agentToken,
+        });
+      } else {
+        authorization = await client.prepareExecution({
+          ...executionRequest,
+          idempotencyKey: journal.prepare_idempotency_key,
+          agentToken: options.agentToken,
+        });
+      }
+      if (authorization.status === "waiting_for_review") {
+        validateWaitingResponse(authorization, request, options);
+        const previousReview = journal.authorization?.review;
+        const currentReview = authorization.review!;
+        const changedReview = previousReview !== undefined && previousReview !== null
+          && (previousReview.id !== currentReview.id
+            || previousReview.sourceReceiptId !== currentReview.sourceReceiptId);
+        journal = {
+          ...journal, phase: "waiting_for_review",
+          authorization: { ...authorization, confirmNonce: null },
+          ...(changedReview ? { continue_idempotency_key: undefined } : {}),
+        };
+        await writeJournal(journalPath, journal);
+        return waitingResult(authorization);
+      }
       if (authorization.decision !== "allow") {
         journal = { ...journal, phase: "complete", authorization, final_response: authorization };
         await writeJournal(journalPath, journal);
@@ -555,6 +609,7 @@ async function resumeJournal(
   agentToken?: string,
 ): Promise<CustomerHttpExecutionResult> {
   const authorization = requireAuthorization(journal);
+  if (journal.phase === "waiting_for_review") return waitingResult(authorization);
   if (authorization.decision !== "allow") {
     return { state: "not_allowed", authorization };
   }
@@ -753,6 +808,15 @@ function validateApprovedResponse(
         && response.effectiveEvidenceMode !== "witnessed")) {
     throw new AllowlyProtocolError("approval scope does not match the customer execution request");
   }
+  validateRequestDescriptor(response, request, options);
+  assertApprovalLive(approval);
+}
+
+function validateRequestDescriptor(
+  response: CustomerExecutionResponse,
+  request: LocalRequest,
+  options: CustomerHttpOptions,
+): void {
   const descriptor = response.requestDescriptor;
   if (descriptor.operationId !== options.operationId
       || descriptor.authorizationId !== options.authorizationId
@@ -770,7 +834,65 @@ function validateApprovedResponse(
       }) !== stableJson(request.commitment)) {
     throw new AllowlyProtocolError("approval request does not match the local HTTP request");
   }
-  assertApprovalLive(approval);
+}
+
+function validateWaitingResponse(
+  response: CustomerExecutionResponse,
+  request: LocalRequest,
+  options: CustomerHttpOptions,
+): void {
+  const review = response.review;
+  if (response.operationId !== options.operationId
+      || response.destinationId !== options.enabledExecutableId
+      || response.action !== options.action
+      || response.status !== "waiting_for_review"
+      || (response.decision !== "confirm" && response.decision !== "escalate")
+      || response.decisionState !== "not_allowed"
+      || response.targetState !== "not_started"
+      || response.evidenceState !== "pending"
+      || response.approval !== null
+      || response.approvalSha256 !== null
+      || response.downstream !== null
+      || review === undefined || review === null
+      || review.kind !== response.decision
+      || review.sourceReceiptId !== decisionReceiptId(response)) {
+    throw new AllowlyProtocolError("waiting execution lacks a bound review");
+  }
+  validateRequestDescriptor(response, request, options);
+}
+
+function decisionReceiptId(response: CustomerExecutionResponse): string {
+  return response.decisionReceipt.status === "pending"
+    ? response.decisionReceipt.receiptId
+    : stringField(response.decisionReceipt.receipt, "receipt_id");
+}
+
+function waitingResult(response: CustomerExecutionResponse): CustomerHttpExecutionResult {
+  if (response.status !== "waiting_for_review" || response.review === undefined
+      || response.review === null
+      || response.review.kind !== response.decision
+      || response.review.sourceReceiptId !== decisionReceiptId(response)) {
+    throw new AllowlyProtocolError("waiting journal lacks a bound review");
+  }
+  return { state: "waiting_for_review", authorization: response, review: response.review };
+}
+
+function originalPrepareRequest(
+  request: LocalRequest,
+  options: CustomerHttpOptions,
+  journal: ExecutionJournal,
+): Omit<PrepareExecutionRequest, "idempotencyKey" | "agentToken"> {
+  return {
+    operationId: options.operationId,
+    authorizationId: options.authorizationId,
+    enabledExecutableId: options.enabledExecutableId,
+    catalogOperationId: options.catalogOperationId,
+    action: options.action,
+    evidenceMode: options.evidenceMode ?? "receipt",
+    httpRequest: request.commitment,
+    policyInput: options.policyInput,
+    clientTimestamp: journal.prepare_client_timestamp!,
+  };
 }
 
 function assertApprovalLive(approval: Record<string, unknown>): void {

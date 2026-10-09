@@ -177,6 +177,47 @@ export interface PrepareExecutionRequest {
   agentToken?: string;
 }
 
+export interface ContinueExecutionRequest {
+  /** The exact original prepare request, including its original timestamp. */
+  executionRequest: Omit<PrepareExecutionRequest, "idempotencyKey" | "agentToken">;
+  reviewId: string;
+  sourceReceiptId: string;
+  idempotencyKey: string;
+  agentToken?: string;
+}
+
+export interface CustomerExecutionReview {
+  kind: "confirm" | "escalate";
+  id: string;
+  sourceReceiptId: string;
+  expiresAt: string;
+}
+
+/** Current review state is a wake-up signal, not permission to dispatch. */
+export interface PromptStatusResponse {
+  authorizationId: string;
+  action: string;
+  resource: string | null;
+  status: "pending" | "approved" | "rejected" | "expired" | "unknown";
+  expiresAt: string;
+  resolvedAt: string | null;
+  sourceReceiptId: string | null;
+  resolutionReceiptId: string | null;
+}
+
+export interface ConfirmationStatusResponse extends PromptStatusResponse {
+  confirmationId: string;
+  childAuthorizationId: string | null;
+  authorityStatus: "none" | "available" | "expired" | "revoked" | "unknown";
+  authorityExpiresAt: string | null;
+}
+
+export interface EscalationStatusResponse extends PromptStatusResponse {
+  escalationId: string;
+  authorityStatus: "none" | "available" | "expired" | "revoked" | "consumed" | "unknown";
+  consumedAt: string | null;
+}
+
 export interface CustomerExecutionRequestDescriptor {
   operationId: string;
   authorizationId: string;
@@ -212,6 +253,7 @@ export interface CustomerExecutionDownstream {
 
 export type CustomerExecutionStatus =
   | "denied"
+  | "waiting_for_review"
   | "confirmation_required"
   | "escalation_required"
   | "approved"
@@ -244,6 +286,8 @@ export interface CustomerExecutionResponse {
   witnessSession: CustomerExecutionWitnessSession | null;
   downstream: CustomerExecutionDownstream | null;
   outcomeEvidence: OutcomeEvidence | null;
+  review?: CustomerExecutionReview | null;
+  confirmationId?: string | null;
   confirmNonce?: string | null;
   confirmExpiresAt?: string | null;
   confirmPromptHint?: string | null;
@@ -359,6 +403,11 @@ export interface CustomerHttpProviderResponse {
 }
 
 export type CustomerHttpExecutionResult =
+  | {
+    state: "waiting_for_review";
+    authorization: CustomerExecutionResponse;
+    review: CustomerExecutionReview;
+  }
   | {
     state: "not_allowed";
     authorization: CustomerExecutionResponse;
@@ -570,10 +619,9 @@ export type ConfirmationApproveResponse = (
   | { decision: "not_approved" | "denied_by_user"; authorizationId: null; expiresAt: null }
 ) & { receipt?: ReceiptEnvelopePending | null };
 
-export type PromptStatus = "pending" | "approved" | "rejected" | "expired" | "unknown";
-export type ConfirmationAuthorityStatus = "none" | "available" | "expired" | "revoked" | "unknown";
-export type EscalationAuthorityStatus = ConfirmationAuthorityStatus | "consumed";
-
+export type PromptStatus = PromptStatusResponse["status"];
+export type ConfirmationAuthorityStatus = ConfirmationStatusResponse["authorityStatus"];
+export type EscalationAuthorityStatus = EscalationStatusResponse["authorityStatus"];
 export type ResolutionWebhookEventType = "confirmation.resolved" | "escalation.resolved";
 export type ResolutionWebhookDeliveryStatus = "pending" | "delivered" | "failed" | "cancelled";
 
@@ -625,32 +673,10 @@ export interface ResolutionWebhookDeliveries {
   items: ResolutionWebhookDelivery[];
 }
 
-interface PromptStatusResponse {
-  authorizationId: string;
-  action: string;
-  resource: string | null;
-  status: PromptStatus;
-  expiresAt: string;
-  resolvedAt: string | null;
-  sourceReceiptId: string | null;
-  resolutionReceiptId: string | null;
-}
-
-/** Recorded choice and grant lifecycle. Run a fresh check before acting. */
-export interface ConfirmationStatus extends PromptStatusResponse {
-  confirmationId: string;
-  childAuthorizationId: string | null;
-  authorityStatus: ConfirmationAuthorityStatus;
-  authorityExpiresAt: string | null;
-}
-
-/** Recorded choice and one-use grant lifecycle, never permission to execute. */
-export interface EscalationStatus extends PromptStatusResponse {
-  escalationId: string;
-  authorityStatus: EscalationAuthorityStatus;
-  consumedAt: string | null;
-}
-
+/** Compatible status name from SDK 0.6.1. */
+export type ConfirmationStatus = ConfirmationStatusResponse;
+/** Compatible status name from SDK 0.6.1. */
+export type EscalationStatus = EscalationStatusResponse;
 export interface EscalationResolveRequest {
   resolution: "approved" | "rejected";
   resolvedBy: string;
