@@ -3,7 +3,8 @@
  * (verify.md, sdk/typescript.md, integration.md). `npm run typecheck` is the
  * assertion that the documented shapes match the SDK's real signatures.
  */
-import { Allowly, fetchKeysDoc, loadKeysFromJson, SealWebhookClient, verifyReceipt, VerificationError } from "../index.js";
+import { Allowly, fetchKeysDoc, loadKeysFromJson, SealWebhookClient, verifyReceipt, VerificationError, verifyResolutionWebhook } from "../index.js";
+import type { ConfirmationStatus, EscalationStatus, PromptStatus, ConfirmationAuthorityStatus, EscalationAuthorityStatus } from "../index.js";
 
 export async function docsVerifySnippet(receiptId: string): Promise<void> {
   const client = new Allowly({ apiKey: "allowly_l1_s001_..." });
@@ -39,6 +40,47 @@ export async function docsConfirmationSnippet(nonce: string, approved: boolean):
     void declined;
   }
   if (resolution.receipt) await client.receipts.fetchSigned(resolution.receipt.receiptId);
+}
+
+export async function docsPromptStatusSnippet(confirmationId: string, escalationId: string): Promise<void> {
+  const client = new Allowly({ apiKey: "allowly_l1_s001_..." });
+  const confirmation: ConfirmationStatus = await client.confirmations.get(confirmationId);
+  const escalation: EscalationStatus = await client.escalations.get(escalationId);
+  const choice: PromptStatus = confirmation.status;
+  const confirmationAuthority: ConfirmationAuthorityStatus = confirmation.authorityStatus;
+  const escalationAuthority: EscalationAuthorityStatus = escalation.authorityStatus;
+  const child: string | null = confirmation.childAuthorizationId;
+  const consumedAt: string | null = escalation.consumedAt;
+  console.log(choice, confirmationAuthority, escalationAuthority, child, consumedAt);
+
+  const checked = await client.check({ authorizationId: confirmation.authorizationId, actions: [confirmation.action] });
+  const result = checked.results[confirmation.action];
+  if (result.decision === "confirm" && result.confirmationId) {
+    await client.confirmations.get(result.confirmationId);
+  }
+}
+
+export async function docsResolutionWebhookSnippet(rawBody: Uint8Array, requestHeaders: Record<string, string>): Promise<void> {
+  const setup = new Allowly({ apiKey: process.env.ALLOWLY_SETUP_KEY! });
+  const configured = await setup.resolutionWebhook.configure("https://customer.example/allowly-resolution");
+  const signingSecret: string = configured.signingSecret;
+  const current = await setup.resolutionWebhook.get();
+  const recent = await setup.resolutionWebhook.deliveries();
+  const rotated = await setup.resolutionWebhook.rotate();
+  const disabled = await setup.resolutionWebhook.disable();
+  const event = verifyResolutionWebhook(rawBody, requestHeaders, {
+    signingSecret: process.env.ALLOWLY_RESOLUTION_SIGNING_SECRET!,
+    expectedWorkspaceId: process.env.ALLOWLY_WORKSPACE_ID!,
+  });
+  const workspaceId: string = event.workspaceId;
+  const sourceReceiptId: string | null = event.data.sourceReceiptId;
+  const resolutionReceiptId: string = event.data.resolutionReceiptId;
+  const choice: "approved" | "rejected" = event.data.status;
+  void [signingSecret, current, recent, rotated, disabled, workspaceId, sourceReceiptId, resolutionReceiptId, choice];
+  // @ts-expect-error get() does not return a signing secret.
+  void current.signingSecret;
+  // @ts-expect-error Verification requires bytes, never already-parsed JSON.
+  verifyResolutionWebhook("{}", requestHeaders, { signingSecret, expectedWorkspaceId: workspaceId });
 }
 
 export async function docsSealWebhookSnippet(rawJson: string, eventId: string): Promise<void> {

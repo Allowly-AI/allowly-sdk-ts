@@ -1,4 +1,5 @@
 import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
+import { ResolutionWebhookResource } from "./resolution-webhook.js";
 import {
   SEAL_ACTION,
   SEAL_AGENT_ID,
@@ -19,6 +20,7 @@ import type {
   AuthorizationRevokeResponse,
   ConfirmationApproveRequest,
   ConfirmationApproveResponse,
+  ConfirmationStatus,
   BudgetInfo,
   BudgetSettlementResponse,
   EscalationInfo,
@@ -26,6 +28,8 @@ import type {
   PolicyEvalInfo,
   EscalationResolveRequest,
   EscalationResolveResponse,
+  EscalationStatus,
+  PromptStatus,
   PrepareExecutionRequest,
   CustomerExecutionResponse,
   ClaimExecutionDispatchRequest,
@@ -78,6 +82,7 @@ export class Allowly {
   readonly confirmations: ConfirmationsResource;
   readonly escalations: EscalationsResource;
   readonly receipts: ReceiptsResource;
+  readonly resolutionWebhook: ResolutionWebhookResource;
 
   constructor(options: AllowlyOptions) {
     this.apiKey = options.apiKey;
@@ -108,6 +113,7 @@ export class Allowly {
     this.confirmations = new ConfirmationsResource(this);
     this.escalations = new EscalationsResource(this);
     this.receipts = new ReceiptsResource(this);
+    this.resolutionWebhook = new ResolutionWebhookResource(this);
   }
 
   /** @internal */
@@ -738,6 +744,17 @@ class AuthorizationsResource {
 class ConfirmationsResource {
   constructor(private readonly client: Allowly) {}
 
+  /** Read an opaque cnf_ ID from check, never the approval nonce. */
+  async get(confirmationId: string): Promise<ConfirmationStatus> {
+    if (typeof confirmationId !== "string" || !/^cnf_[A-Za-z0-9_-]+$/.test(confirmationId)) {
+      throw new Error("confirmationId must be an opaque cnf_ ID, not an approval nonce");
+    }
+    const raw = await this.client.request<unknown>(
+      "GET", `/v1/confirmations/${encodeURIComponent(confirmationId)}/status`,
+    );
+    return parseConfirmationStatus(raw, confirmationId);
+  }
+
   async approve(nonce: string, req: ConfirmationApproveRequest): Promise<ConfirmationApproveResponse> {
     const raw = await this.client.request<Record<string, unknown>>(
       "POST",
@@ -775,6 +792,14 @@ class ConfirmationsResource {
 
 class EscalationsResource {
   constructor(private readonly client: Allowly) {}
+
+  /** Read the recorded choice and grant lifecycle; re-check before acting. */
+  async get(escalationId: string): Promise<EscalationStatus> {
+    const raw = await this.client.request<unknown>(
+      "GET", `/v1/escalations/${encodeURIComponent(escalationId)}`,
+    );
+    return parseEscalationStatus(raw, escalationId);
+  }
 
   async resolve(escalationId: string, req: EscalationResolveRequest): Promise<EscalationResolveResponse> {
     const raw = await this.client.request<Record<string, unknown>>(
@@ -1054,6 +1079,7 @@ function parseCheckResponse(
             confirmNonce: requireString(result, "confirm_nonce"),
             confirmExpiresAt: requireString(result, "confirm_expires_at"),
             confirmPromptHint: requireString(result, "confirm_prompt_hint"),
+            confirmationId: optionalConfirmationId(result),
           }];
         }
         if (decision === "escalate") {
@@ -1076,6 +1102,111 @@ function requireRecord(value: unknown, name: string): Record<string, unknown> {
     throw new AllowlyProtocolError(`${name} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function optionalConfirmationId(raw: Record<string, unknown>): string | null {
+  const value = optionalString(raw, "confirmation_id");
+  if (value !== null && !/^cnf_[A-Za-z0-9_-]+$/.test(value)) {
+    throw new AllowlyProtocolError("confirmation_id must be an opaque cnf_ ID");
+  }
+  return value;
+}
+
+function statusNullableString(raw: Record<string, unknown>, key: string): string | null {
+  if (!Object.prototype.hasOwnProperty.call(raw, key)) {
+    throw new AllowlyProtocolError(`${key} must be present as a string or null`);
+  }
+  const value = optionalString(raw, key);
+  if (value === "" && key !== "resource") {
+    throw new AllowlyProtocolError(`${key} must be non-empty or null`);
+  }
+  return value;
+}
+
+function statusTimestamp(raw: Record<string, unknown>, key: string, nullable = false): string | null {
+  const value = nullable ? statusNullableString(raw, key) : requireString(raw, key);
+  if (value === null) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!match) throw new AllowlyProtocolError(`${key} must be a valid timezone-aware timestamp`);
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > daysInMonth
+      || hour > 23 || minute > 59 || second > 59 || Number(match[7] ?? 0) > 23 || Number(match[8] ?? 0) > 59) {
+    throw new AllowlyProtocolError(`${key} must be a valid timezone-aware timestamp`);
+  }
+  try {
+    return clientTimestamp(value);
+  } catch {
+    throw new AllowlyProtocolError(`${key} must be a valid timezone-aware timestamp`);
+  }
+}
+
+function parsePromptStatus(raw: Record<string, unknown>) {
+  const status = requireString(raw, "status");
+  if (status !== "pending" && status !== "approved" && status !== "rejected" && status !== "expired" && status !== "unknown") {
+    throw new AllowlyProtocolError(`unknown prompt status: ${JSON.stringify(status)}`);
+  }
+  const authorizationId = requireString(raw, "authorization_id");
+  const action = requireString(raw, "action");
+  if (!authorizationId || !action) {
+    throw new AllowlyProtocolError("status authorization_id and action must be non-empty");
+  }
+  const resolvedAt = statusTimestamp(raw, "resolved_at", true);
+  if ((status === "pending" || status === "expired") && resolvedAt !== null) {
+    throw new AllowlyProtocolError("unresolved prompt resolved_at must be null");
+  }
+  return {
+    authorizationId,
+    action,
+    resource: statusNullableString(raw, "resource"),
+    status: status as PromptStatus,
+    expiresAt: statusTimestamp(raw, "expires_at")!,
+    resolvedAt,
+    sourceReceiptId: statusNullableString(raw, "source_receipt_id"),
+    resolutionReceiptId: statusNullableString(raw, "resolution_receipt_id"),
+  };
+}
+
+function parseConfirmationStatus(value: unknown, expectedId: string): ConfirmationStatus {
+  const raw = requireRecord(value, "confirmation status");
+  const confirmationId = requireString(raw, "confirmation_id");
+  if (confirmationId !== expectedId) {
+    throw new AllowlyProtocolError("confirmation_id does not match the request");
+  }
+  const base = parsePromptStatus(raw);
+  const authority = requireString(raw, "authority_status");
+  if (authority !== "none" && authority !== "available" && authority !== "expired" && authority !== "revoked" && authority !== "unknown") {
+    throw new AllowlyProtocolError(`unknown confirmation authority_status: ${JSON.stringify(authority)}`);
+  }
+  const childAuthorizationId = statusNullableString(raw, "child_authorization_id");
+  const authorityExpiresAt = statusTimestamp(raw, "authority_expires_at", true);
+  if (authority === "available" && (base.status !== "approved" || childAuthorizationId === null || authorityExpiresAt === null)) {
+    throw new AllowlyProtocolError("available confirmation authority requires an approved choice and child grant");
+  }
+  if (base.status === "rejected" && authority !== "none") {
+    throw new AllowlyProtocolError("rejected confirmation authority_status must be none");
+  }
+  return { ...base, confirmationId, childAuthorizationId, authorityStatus: authority, authorityExpiresAt };
+}
+
+function parseEscalationStatus(value: unknown, expectedId: string): EscalationStatus {
+  const raw = requireRecord(value, "escalation status");
+  const escalationId = requireString(raw, "escalation_id");
+  if (escalationId !== expectedId) {
+    throw new AllowlyProtocolError("escalation_id does not match the request");
+  }
+  const base = parsePromptStatus(raw);
+  const authority = requireString(raw, "authority_status");
+  if (authority !== "none" && authority !== "available" && authority !== "expired" && authority !== "revoked" && authority !== "consumed" && authority !== "unknown") {
+    throw new AllowlyProtocolError(`unknown escalation authority_status: ${JSON.stringify(authority)}`);
+  }
+  if (authority === "available" && base.status !== "approved") {
+    throw new AllowlyProtocolError("available escalation authority requires an approved choice");
+  }
+  if (base.status === "rejected" && authority !== "none") {
+    throw new AllowlyProtocolError("rejected escalation authority_status must be none");
+  }
+  return { ...base, escalationId, authorityStatus: authority, consumedAt: statusTimestamp(raw, "consumed_at", true) };
 }
 
 function validateSealReceipt(

@@ -453,6 +453,7 @@ export interface ActionCheckResultConfirm extends ActionCheckResultBase {
   confirmNonce: string;
   confirmExpiresAt: string;
   confirmPromptHint: string;
+  confirmationId?: string | null;
 }
 
 export interface ActionCheckResultEscalate extends ActionCheckResultBase {
@@ -568,6 +569,87 @@ export type ConfirmationApproveResponse = (
   | { decision: "approved"; authorizationId: string; expiresAt: string }
   | { decision: "not_approved" | "denied_by_user"; authorizationId: null; expiresAt: null }
 ) & { receipt?: ReceiptEnvelopePending | null };
+
+export type PromptStatus = "pending" | "approved" | "rejected" | "expired" | "unknown";
+export type ConfirmationAuthorityStatus = "none" | "available" | "expired" | "revoked" | "unknown";
+export type EscalationAuthorityStatus = ConfirmationAuthorityStatus | "consumed";
+
+export type ResolutionWebhookEventType = "confirmation.resolved" | "escalation.resolved";
+export type ResolutionWebhookDeliveryStatus = "pending" | "delivered" | "failed" | "cancelled";
+
+export interface ResolutionWebhookEvent {
+  id: string;
+  type: ResolutionWebhookEventType;
+  timestamp: string;
+  workspaceId: string;
+  data: {
+    promptId: string;
+    status: "approved" | "rejected";
+    sourceReceiptId: string | null;
+    resolutionReceiptId: string;
+  };
+}
+
+export interface ResolutionWebhookVerificationOptions {
+  signingSecret: string;
+  expectedWorkspaceId: string;
+  /** Current Unix seconds. Defaults to the system clock. */
+  now?: number;
+}
+
+export interface ResolutionWebhookConfig {
+  workspaceId: string;
+  endpointId: string | null;
+  url: string | null;
+  enabled: boolean;
+  credentialVersion: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ResolutionWebhookSecret extends ResolutionWebhookConfig {
+  signingSecret: string;
+}
+
+export interface ResolutionWebhookDelivery {
+  eventId: string;
+  eventType: ResolutionWebhookEventType;
+  status: ResolutionWebhookDeliveryStatus;
+  attempts: number;
+  createdAt: string;
+  deliveredAt: string | null;
+  lastError: string | null;
+}
+
+export interface ResolutionWebhookDeliveries {
+  items: ResolutionWebhookDelivery[];
+}
+
+interface PromptStatusResponse {
+  authorizationId: string;
+  action: string;
+  resource: string | null;
+  status: PromptStatus;
+  expiresAt: string;
+  resolvedAt: string | null;
+  sourceReceiptId: string | null;
+  resolutionReceiptId: string | null;
+}
+
+/** Recorded choice and grant lifecycle. Run a fresh check before acting. */
+export interface ConfirmationStatus extends PromptStatusResponse {
+  confirmationId: string;
+  childAuthorizationId: string | null;
+  authorityStatus: ConfirmationAuthorityStatus;
+  authorityExpiresAt: string | null;
+}
+
+/** Recorded choice and one-use grant lifecycle, never permission to execute. */
+export interface EscalationStatus extends PromptStatusResponse {
+  escalationId: string;
+  authorityStatus: EscalationAuthorityStatus;
+  consumedAt: string | null;
+}
 
 export interface EscalationResolveRequest {
   resolution: "approved" | "rejected";
