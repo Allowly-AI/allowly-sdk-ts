@@ -19,6 +19,68 @@ the original authorization before executing.
 SDK 0.6.1 uses `@allowly/verifier ^4.3.0` from npm to verify
 `confirmation.resolve` receipts on wire format 4.
 
+## Confirmation and escalation status
+
+```typescript
+// confirmationId comes from a confirm check result. It is not confirmNonce.
+const confirmation = await client.confirmations.get(confirmationId);
+const escalation = await client.escalations.get(escalationId);
+console.log(confirmation.status, confirmation.authorityStatus);
+console.log(escalation.status, escalation.authorityStatus);
+```
+
+Each `get` makes one authenticated read. Repeat it in your application's own
+bounded polling loop if needed. The prompt `status` is `pending`, `approved`,
+`rejected`, `expired`, or `unknown`; `unknown` means a legacy record does not
+show the choice. An approved choice stays approved after its grant expires,
+is revoked, or (for escalations) is consumed. `authorityStatus: "available"`
+is a lifecycle snapshot. Make a fresh `client.check(...)` with the original
+authorization and execute only an `allow`. These reads never execute actions,
+consume approval, or create receipts. Nullable receipt IDs refer to existing
+records. Older check responses may omit `confirmationId`.
+
+## Resolution webhook
+
+Manage one callback with a setup/CLI credential:
+
+```typescript
+import { Allowly, verifyResolutionWebhook } from "@allowly/sdk";
+
+const setup = new Allowly({ apiKey: process.env.ALLOWLY_SETUP_KEY! });
+const configured = await setup.resolutionWebhook.configure(
+  "https://customer.example/allowly-resolution",
+);
+const signingSecret = configured.signingSecret; // Store securely for the receiver.
+const current = await setup.resolutionWebhook.get();
+const recent = await setup.resolutionWebhook.deliveries();
+// await setup.resolutionWebhook.rotate();
+// await setup.resolutionWebhook.disable();
+```
+
+Runtime API keys cannot manage webhooks. `configure` and `rotate` return the
+current `signingSecret`; `get` and `disable` omit it. Changing the URL,
+re-enabling, or rotating cancels queued events for the old credential version.
+Repeating the same enabled URL returns its current secret. `deliveries` returns
+at most 20 recent summaries with stable error codes.
+
+At your receiver, preserve the raw body as `Uint8Array` or `Buffer` before any
+JSON middleware runs:
+
+```typescript
+const event = verifyResolutionWebhook(rawBody, requestHeaders, {
+  signingSecret: process.env.ALLOWLY_RESOLUTION_SIGNING_SECRET!,
+  expectedWorkspaceId: process.env.ALLOWLY_WORKSPACE_ID!,
+});
+```
+
+Verification uses the [Standard Webhooks HMAC-SHA256 profile](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md)
+and a fixed 300-second attempt timestamp tolerance. Each retry preserves the
+event ID and body, with a fresh signed attempt timestamp. Store `event.id`
+durably and process it once. The shared-secret signature authenticates this
+notification for your receiver; it is not a portable audit receipt or permission
+to execute. Read the current prompt status, then make a fresh check before
+running an action. The helper throws `AllowlyProtocolError` for invalid messages.
+
 ## Install
 
 ```bash

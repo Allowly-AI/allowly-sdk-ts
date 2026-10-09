@@ -58,6 +58,25 @@ function checkBody(action: string, result: Record<string, unknown>, extra: Recor
   };
 }
 
+function promptStatusBody(kind: "confirmation" | "escalation", overrides: Record<string, unknown> = {}) {
+  return {
+    [`${kind}_id`]: kind === "confirmation" ? "cnf_abc" : "esc_abc",
+    authorization_id: "auth_parent",
+    action: "email.send",
+    resource: null,
+    status: "pending",
+    expires_at: "2026-04-20T00:15:00Z",
+    resolved_at: null,
+    source_receipt_id: "rcp_source",
+    resolution_receipt_id: null,
+    authority_status: "none",
+    ...(kind === "confirmation"
+      ? { child_authorization_id: null, authority_expires_at: null }
+      : { consumed_at: null }),
+    ...overrides,
+  } as Record<string, unknown>;
+}
+
 describe("Allowly.check", () => {
   it("rejects insecure base URLs by default", () => {
     expect(() => new Allowly({ apiKey: "test-key", baseUrl: "http://api.example.com" }))
@@ -1141,6 +1160,55 @@ describe("Allowly.authorizations.revoke", () => {
 });
 
 describe("Allowly.confirmations", () => {
+  it.each([
+    ["pending", "none"], ["pending", "revoked"], ["expired", "expired"],
+    ["unknown", "unknown"], ["rejected", "none"],
+    ["approved", "available"], ["approved", "expired"],
+    ["approved", "revoked"], ["approved", "unknown"],
+  ])("reads %s with %s authority in one authenticated GET", async (status, authority) => {
+    const fetch = makeFetch(200, promptStatusBody("confirmation", {
+      status, authority_status: authority,
+      resolved_at: status === "approved" || status === "rejected" ? "2026-04-20T00:01:00Z" : null,
+      child_authorization_id: status === "approved" ? "auth_child" : null,
+      authority_expires_at: status === "approved" ? "2026-04-20T00:02:00Z" : null,
+      source_receipt_id: null, resolution_receipt_id: null,
+    }));
+    const result = await new Allowly({ ...CLIENT_OPTS, fetch }).confirmations.get("cnf_abc");
+    expect(result).toMatchObject({
+      confirmationId: "cnf_abc", authorizationId: "auth_parent", status,
+      authorityStatus: authority, resource: null, sourceReceiptId: null, resolutionReceiptId: null,
+      childAuthorizationId: status === "approved" ? "auth_child" : null,
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]).toEqual([
+      `${BASE}/v1/confirmations/cnf_abc/status`,
+      expect.objectContaining({ method: "GET", body: undefined, headers: { Authorization: "Bearer test-key" } }),
+    ]);
+  });
+
+  it("preserves unknown historical child information", async () => {
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, promptStatusBody("confirmation", {
+      status: "unknown", authority_status: "unknown", child_authorization_id: "auth_child",
+    })) });
+    expect(await client.confirmations.get("cnf_abc"))
+      .toMatchObject({ status: "unknown", childAuthorizationId: "auth_child" });
+  });
+
+  it.each(["child_authorization_id", "authority_expires_at"])("requires an available child grant: %s", async (key) => {
+    const body = promptStatusBody("confirmation", {
+      status: "approved", authority_status: "available",
+      child_authorization_id: "auth_child", authority_expires_at: "2026-04-20T00:02:00Z", [key]: null,
+    });
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, body) }).confirmations.get("cnf_abc"))
+      .rejects.toThrow("child grant");
+  });
+
+  it.each(["approval-nonce", "", "cnf_", "cnf_a/b"])("rejects a nonce before requesting: %s", async (id) => {
+    const fetch = makeFetch(200, {});
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch }).confirmations.get(id)).rejects.toThrow("opaque cnf_");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("approves a confirmation", async () => {
     const fetch = makeFetch(200, { decision: "approved", authorization_id: "auth_xyz", expires_at: "2026-04-20T00:01:00Z" });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -1203,6 +1271,34 @@ describe("Allowly.confirmations", () => {
 });
 
 describe("Allowly.escalations", () => {
+  it("accepts a null consumed timestamp for a legacy unknown choice", async () => {
+    const body = promptStatusBody("escalation", { status: "unknown", authority_status: "consumed" });
+    expect(await new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, body) }).escalations.get("esc_abc"))
+      .toMatchObject({ status: "unknown", authorityStatus: "consumed", consumedAt: null });
+  });
+
+  it.each([
+    ["pending", "none"], ["pending", "revoked"], ["expired", "expired"],
+    ["unknown", "unknown"], ["unknown", "consumed"], ["rejected", "none"],
+    ["approved", "available"], ["approved", "expired"],
+    ["approved", "revoked"], ["approved", "consumed"],
+  ])("reads %s with %s authority", async (status, authority) => {
+    const consumedAt = authority === "consumed" ? "2026-04-20T00:02:00Z" : null;
+    const fetch = makeFetch(200, promptStatusBody("escalation", {
+      status, authority_status: authority, consumed_at: consumedAt,
+      resolved_at: status === "approved" || status === "rejected" ? "2026-04-20T00:01:00Z" : null,
+      source_receipt_id: null, resolution_receipt_id: null,
+    }));
+    const result = await new Allowly({ ...CLIENT_OPTS, fetch }).escalations.get("esc_abc");
+    expect(result).toMatchObject({
+      escalationId: "esc_abc", status, authorityStatus: authority, consumedAt,
+      sourceReceiptId: null, resolutionReceiptId: null,
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][0]).toBe(`${BASE}/v1/escalations/esc_abc`);
+    expect(fetch.mock.calls[0][1]).toMatchObject({ method: "GET", body: undefined });
+  });
+
   it("approves an escalation", async () => {
     const fetch = makeFetch(200, {
       escalation_id: "esc_abc",
@@ -1234,6 +1330,69 @@ describe("Allowly.escalations", () => {
     const res = await client.escalations.reject("esc_abc", { resolvedBy: "compliance:1" });
     expect(res.status).toBe("rejected");
     expect(res.receipt).toBeNull();
+  });
+});
+
+describe.each(["confirmation", "escalation"] as const)("%s status validation", (kind) => {
+  const id = kind === "confirmation" ? "cnf_abc" : "esc_abc";
+  const get = (client: Allowly) => kind === "confirmation"
+    ? client.confirmations.get(id)
+    : client.escalations.get(id);
+
+  it.each([
+    "authorization_id", "action", "resource", "status", "expires_at", "resolved_at",
+    "source_receipt_id", "resolution_receipt_id", "authority_status",
+    ...(kind === "confirmation" ? ["confirmation_id", "child_authorization_id", "authority_expires_at"] : ["escalation_id", "consumed_at"]),
+  ])("requires explicit %s", async (key) => {
+    const body = promptStatusBody(kind);
+    delete body[key];
+    await expect(get(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, body) })))
+      .rejects.toThrow(AllowlyProtocolError);
+  });
+
+  it.each([
+    { authorization_id: "" }, { action: false }, { resource: {} },
+    { status: "allowed" }, { expires_at: "not-a-date" },
+    { expires_at: "2026-02-30T00:15:00Z" }, { expires_at: "2026-04-20T00:15:00+00:60" },
+    { expires_at: "2026-04-20T00:15:00" }, { resolved_at: false },
+    { source_receipt_id: 1 }, { resolution_receipt_id: [] },
+    { authority_status: "allow" }, { authority_status: "available" },
+    { status: "rejected", authority_status: "revoked" },
+    { resolved_at: "2026-04-20T00:01:00Z" },
+    ...Object.keys(promptStatusBody(kind)).map((key) => ({ [key]: false })),
+  ])("rejects malformed fields", async (overrides) => {
+    await expect(get(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, promptStatusBody(kind, overrides)) })))
+      .rejects.toThrow(AllowlyProtocolError);
+  });
+
+  it.each([null, [], { confirmation_id: "cnf_other", escalation_id: "esc_other" }])
+    ("rejects wrong identity or body", async (body) => {
+      await expect(get(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, body) })))
+        .rejects.toThrow(AllowlyProtocolError);
+    });
+
+  it.each([403, 404, 429, 503])("does not retry or fall back on HTTP %s", async (status) => {
+    const fetch = makeFetch(status, { error: { code: "unavailable", message: "Unavailable" } });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, fallbackByAction: { "email.send": "fail_open" } });
+    await expect(get(client)).rejects.toMatchObject({ status });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("check confirmation monitor identity", () => {
+  const confirm = {
+    decision: "confirm", reason: "confirmation_required", receipt: PENDING_RECEIPT,
+    confirm_nonce: "bearer-nonce", confirm_expires_at: "2026-04-20T00:15:00Z", confirm_prompt_hint: "Approve?",
+  };
+  it.each(["cnf_abc", null, undefined])("exposes optional confirmation_id %s", async (id) => {
+    const fetch = makeFetch(200, checkBody("x", { ...confirm, confirmation_id: id }));
+    const result = (await new Allowly({ ...CLIENT_OPTS, fetch }).check({ authorizationId: "auth_1", actions: ["x"] })).results.x;
+    expect(result).toMatchObject({ confirmationId: id ?? null, confirmNonce: "bearer-nonce" });
+  });
+  it.each([false, "bearer-nonce", "cnf_"])("rejects malformed confirmation_id %s", async (id) => {
+    const fetch = makeFetch(200, checkBody("x", { ...confirm, confirmation_id: id }));
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch }).check({ authorizationId: "auth_1", actions: ["x"] }))
+      .rejects.toThrow("confirmation_id");
   });
 });
 
