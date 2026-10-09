@@ -238,4 +238,3 @@ describe("resolutionWebhook setup resource", () => {
     await expect(new Allowly({ apiKey: "setup-key", fetch: fetchBody(body) }).resolutionWebhook.deliveries()).rejects.toThrow(AllowlyProtocolError);
   });
 });
-

@@ -13,11 +13,79 @@ Confirmation responses expose `receipt`, a pending resolution envelope or
 `client.receipts.fetchSigned(response.receipt.receiptId)` when a receipt is
 present, then verify it with your configured workspace and trusted keys.
 The signature authenticates the recorded client report, not a named human's
-identity or approval. Resolution does not dispatch an action; re-check with
-the original authorization before executing.
+identity or approval. Resolution does not dispatch an action. A standalone
+Check needs a fresh Check with the original authorization. A saved native
+Execute uses Continue, which validates current policy within the same operation.
 
 SDK 0.7.0 requires `@allowly/verifier ^4.3.1` to verify
 `confirmation.resolve` receipts on wire format 4.
+
+## Confirmation and escalation status
+
+```typescript
+// confirmationId comes from a confirm check result. It is not confirmNonce.
+const confirmation = await client.confirmations.getStatus(confirmationId);
+const escalation = await client.escalations.getStatus(escalationId);
+console.log(confirmation.status, confirmation.authorityStatus);
+console.log(escalation.status, escalation.authorityStatus);
+```
+
+Each `getStatus` makes one authenticated read. The older `get` methods remain
+compatible aliases. Repeat the read in your application's own
+bounded polling loop if needed. The prompt `status` is `pending`, `approved`,
+`rejected`, `expired`, or `unknown`; `unknown` means a legacy record does not
+show the choice. An approved choice stays approved after its grant expires,
+is revoked, or (for escalations) is consumed. `authorityStatus: "available"`
+is a lifecycle snapshot, not execution permission. A standalone Check flow
+makes a fresh `client.check(...)` with the original authorization and acts only
+on `allow`. A saved native Execute calls Continue with the same operation and
+request, without a separate enforcing Check. These reads never execute actions,
+consume approval, or create receipts. Nullable receipt IDs refer to existing
+records. Older check responses may omit `confirmationId`.
+
+## Resolution webhook
+
+Manage one callback with a setup/CLI credential:
+
+```typescript
+import { Allowly, verifyResolutionWebhook } from "@allowly/sdk";
+
+const setup = new Allowly({ apiKey: process.env.ALLOWLY_SETUP_KEY! });
+const configured = await setup.resolutionWebhook.configure(
+  "https://customer.example/allowly-resolution",
+);
+const signingSecret = configured.signingSecret; // Store securely for the receiver.
+const current = await setup.resolutionWebhook.get();
+const recent = await setup.resolutionWebhook.deliveries();
+// await setup.resolutionWebhook.rotate();
+// await setup.resolutionWebhook.disable();
+```
+
+Runtime API keys cannot manage webhooks. `configure` and `rotate` return the
+current `signingSecret`; `get` and `disable` omit it. Changing the URL,
+re-enabling, or rotating cancels queued events for the old credential version.
+Repeating the same enabled URL returns its current secret. `deliveries` returns
+at most 20 recent summaries with stable error codes.
+
+At your receiver, preserve the raw body as `Uint8Array` or `Buffer` before any
+JSON middleware runs:
+
+```typescript
+const event = verifyResolutionWebhook(rawBody, requestHeaders, {
+  signingSecret: process.env.ALLOWLY_RESOLUTION_SIGNING_SECRET!,
+  expectedWorkspaceId: process.env.ALLOWLY_WORKSPACE_ID!,
+});
+```
+
+Verification uses the [Standard Webhooks HMAC-SHA256 profile](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md)
+and a fixed 300-second attempt timestamp tolerance. Each retry preserves the
+event ID and body, with a fresh signed attempt timestamp. Store `event.id`
+durably and process it once. The shared-secret signature authenticates this
+notification for your receiver; it is not a portable audit receipt or permission
+to execute. Bind the prompt and source receipt to your saved job and read the
+current status. A saved native Execute calls Continue; a standalone Check flow
+makes a fresh Check before acting. The helper throws `AllowlyProtocolError`
+for invalid messages.
 
 ## Install
 
@@ -186,27 +254,9 @@ original request before waking your saved job, then call Continue. Status alone
 does not permit execution. `await allowly.readiness()` tests `/readyz` only,
 not policy or provider permission.
 
-For a callback receiver, authenticate the exact raw body before parsing it:
-
-```typescript
-import { verifyResolutionWebhook } from "@allowly/sdk";
-const event = verifyResolutionWebhook(rawBody, signatureHeaders, {
-  signingSecret: configuredSecret,
-  expectedWorkspaceId: trustedWorkspaceId,
-});
-```
-
-Persist the event ID for duplicate handling and bind its prompt/source receipt
-to the saved job. Read current status before waking that job. A native Execute
-uses `continueHttpExecution` with the original operation and request; do not run
-a separate enforcing Check first. A standalone Check flow still needs its fresh
-Check before the customer's action. The HMAC authenticates delivery to its
-receiver, not a portable audit receipt or human identity.
-
-A setup/CLI client, never an agent runtime key, can use
-`resolutionWebhook.get()`, `.configure(url)`, `.rotate()`, `.disable()`, and
-`.deliveries()`. Configuration is shared by one Allowly workspace. Coordinate
-with existing consumers before changing its single callback URL or signing key.
+Resolution webhook configuration is shared by one Allowly workspace.
+Coordinate with existing consumers before changing its single callback URL or
+signing key.
 
 Release preparation uses the real sibling verifier source while 4.3.1 is not
 published. Restore `@allowly/verifier ^4.3.1` and regenerate the registry lock

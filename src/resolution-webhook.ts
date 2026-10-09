@@ -255,4 +255,3 @@ function parseDelivery(value: unknown): ResolutionWebhookDelivery {
     createdAt: isoTimestamp(raw, "created_at"), deliveredAt, lastError,
   };
 }
-

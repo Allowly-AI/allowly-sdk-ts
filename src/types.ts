@@ -502,6 +502,7 @@ export interface ActionCheckResultConfirm extends ActionCheckResultBase {
   confirmNonce: string;
   confirmExpiresAt: string;
   confirmPromptHint: string;
+  confirmationId?: string | null;
 }
 
 export interface ActionCheckResultEscalate extends ActionCheckResultBase {
@@ -618,6 +619,9 @@ export type ConfirmationApproveResponse = (
   | { decision: "not_approved" | "denied_by_user"; authorizationId: null; expiresAt: null }
 ) & { receipt?: ReceiptEnvelopePending | null };
 
+export type PromptStatus = PromptStatusResponse["status"];
+export type ConfirmationAuthorityStatus = ConfirmationStatusResponse["authorityStatus"];
+export type EscalationAuthorityStatus = EscalationStatusResponse["authorityStatus"];
 export type ResolutionWebhookEventType = "confirmation.resolved" | "escalation.resolved";
 export type ResolutionWebhookDeliveryStatus = "pending" | "delivered" | "failed" | "cancelled";
 
@@ -669,6 +673,10 @@ export interface ResolutionWebhookDeliveries {
   items: ResolutionWebhookDelivery[];
 }
 
+/** Compatible status name from SDK 0.6.1. */
+export type ConfirmationStatus = ConfirmationStatusResponse;
+/** Compatible status name from SDK 0.6.1. */
+export type EscalationStatus = EscalationStatusResponse;
 export interface EscalationResolveRequest {
   resolution: "approved" | "rejected";
   resolvedBy: string;
