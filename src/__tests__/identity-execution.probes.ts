@@ -1,4 +1,4 @@
-import { Allowly, NativeAgentCredential, commitCustomerHttpRequest } from "../index.js";
+import { Allowly, NativeAgentCredential, commitCustomerHttpRequest, verifyResolutionWebhook } from "../index.js";
 import type {
   CustomerHttpExecutionResult,
   CustomerHttpProviderResponse,
@@ -7,6 +7,7 @@ import type {
 import type {
   ActionEntry,
   CustomerExecutionResponse,
+  ContinueExecutionRequest,
   PrepareExecutionRequest,
   ReceiptAcknowledgmentRequest,
 } from "../types.js";
@@ -111,7 +112,7 @@ const httpExecution: Promise<CustomerHttpExecutionResult> = client.executeHttp(g
   journalDirectory: "/var/lib/my-agent/allowly-executions",
 });
 void httpExecution.then((result) => {
-  if (result.state === "not_allowed") return;
+  if (result.state === "not_allowed" || result.state === "waiting_for_review") return;
   const pending: boolean = result.outcomePending;
   const provider: CustomerHttpProviderResponse | null = result.providerResponse;
   const report: CustomerExecutionResponse | null = result.response;
@@ -122,6 +123,55 @@ const resumedExecution: Promise<CustomerHttpExecutionResult> = client.resumeHttp
   journalDirectory: "/var/lib/my-agent/allowly-executions",
 });
 void resumedExecution;
+
+const continuedExecution: Promise<CustomerHttpExecutionResult> = client.continueHttpExecution(
+  greenhouseCandidateListUrl,
+  {
+    operationId: "greenhouse-candidates-list-page-1",
+    authorizationId: "auth_123",
+    enabledExecutableId: "exe_123",
+    catalogOperationId: "greenhouse.candidates.list",
+    action: "greenhouse.candidates.list",
+    method: "GET",
+    headers: greenhouseCandidateListHeaders,
+    journalDirectory: "/var/lib/my-agent/allowly-executions",
+  },
+);
+void continuedExecution;
+
+const continuation = {
+  executionRequest: {
+    operationId: "greenhouse-candidates-list-page-1",
+    authorizationId: "auth_123",
+    enabledExecutableId: "exe_123",
+    catalogOperationId: "greenhouse.candidates.list",
+    action: "greenhouse.candidates.list",
+    evidenceMode: "receipt",
+    httpRequest: greenhouseCandidateListCommitment,
+    clientTimestamp: "2026-09-24T20:01:02.123Z",
+  },
+  reviewId: "cnf_123",
+  sourceReceiptId: "rcp_123",
+  idempotencyKey: "continue-123",
+} satisfies ContinueExecutionRequest;
+const continuationApproval: Promise<CustomerExecutionResponse> = client.continueExecution(continuation);
+void continuationApproval;
+
+// @ts-expect-error Continuation requires the original request, not only an operation ID.
+void client.continueExecution({ operationId: "greenhouse-candidates-list-page-1" });
+
+const confirmationStatus: Promise<import("../index.js").ConfirmationStatusResponse> = client.confirmations.getStatus("cnf_example");
+const escalationStatus: Promise<import("../index.js").EscalationStatusResponse> = client.escalations.getStatus("esc_example");
+const readiness: Promise<boolean> = client.readiness();
+void confirmationStatus; void escalationStatus; void readiness;
+
+const webhookConfig: Promise<import("../index.js").ResolutionWebhookConfig> = client.resolutionWebhook.get();
+const webhookSecret: Promise<import("../index.js").ResolutionWebhookSecret> = client.resolutionWebhook.configure("https://customer.example/decisions");
+const webhookDeliveries: Promise<import("../index.js").ResolutionWebhookDeliveries> = client.resolutionWebhook.deliveries();
+const webhookEvent: import("../index.js").ResolutionWebhookEvent = verifyResolutionWebhook(new Uint8Array([123, 125]), {}, {
+  signingSecret: "whsec_...", expectedWorkspaceId: "ws_123",
+});
+void webhookConfig; void webhookSecret; void webhookDeliveries; void webhookEvent;
 
 void client.authorizations.create({
   userId: "user_123",

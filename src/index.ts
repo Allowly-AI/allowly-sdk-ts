@@ -2,6 +2,7 @@ export { Allowly, AllowlyTransportError } from "./client.js";
 export { NativeAgentCredential } from "./agent-identity.js";
 export type { NativeAgentCredentialData } from "./agent-identity.js";
 export { SealWebhookClient } from "./seal-webhook.js";
+export { verifyResolutionWebhook } from "./resolution-webhook.js";
 export {
   commitCustomerHttpRequest,
   completeCustomerExecutionEvidence,
@@ -18,6 +19,19 @@ export type {
   BudgetInfo,
   BudgetSettlementResponse,
   PrepareExecutionRequest,
+  ContinueExecutionRequest,
+  CustomerExecutionReview,
+  PromptStatusResponse,
+  ConfirmationStatusResponse,
+  EscalationStatusResponse,
+  ResolutionWebhookConfig,
+  ResolutionWebhookSecret,
+  ResolutionWebhookDeliveries,
+  ResolutionWebhookDelivery,
+  ResolutionWebhookDeliveryStatus,
+  ResolutionWebhookEvent,
+  ResolutionWebhookEventType,
+  ResolutionWebhookVerificationOptions,
   CustomerEvidenceMode,
   CustomerHeaderCommitment,
   CustomerHttpRequestCommitment,

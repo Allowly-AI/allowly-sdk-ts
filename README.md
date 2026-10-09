@@ -16,7 +16,7 @@ The signature authenticates the recorded client report, not a named human's
 identity or approval. Resolution does not dispatch an action; re-check with
 the original authorization before executing.
 
-SDK 0.6.1 uses `@allowly/verifier ^4.3.0` from npm to verify
+SDK 0.7.0 requires `@allowly/verifier ^4.3.1` to verify
 `confirmation.resolve` receipts on wire format 4.
 
 ## Install
@@ -138,7 +138,7 @@ const result = await allowly.executeHttp(
   },
 );
 
-if (result.state === "not_allowed") return;
+if (result.state === "not_allowed" || result.state === "waiting_for_review") return;
 // Use result.providerResponse locally when present (status and Uint8Array body).
 if (result.outcomePending || result.state === "unknown") {
   // Retry later when Allowly is reachable. This never sends the provider request again.
@@ -155,6 +155,63 @@ endpoint with an OAuth
 [Bearer access token](https://harvestdocs.greenhouse.io/docs/authentication). The
 GET has no request body, limits the page to one non-private candidate, and needs
 the `harvest:candidates:list` scope with a Site Admin authorizing user.
+
+For a confirm or escalate decision, `executeHttp` returns
+`state: "waiting_for_review"` with the opaque `review.id`, its kind, source
+receipt ID, and expiry. Save the original URL, headers, body, and policy inputs
+in your own protected storage. The SDK journal does not store these private
+request bytes. A verified resolution webhook can wake your job, or you can poll
+the approval status. Neither the webhook nor the human choice is permission to
+send the request.
+
+After resolution, reconstruct the **same** request and call
+`allowly.continueHttpExecution(originalUrl, originalOptions)`. It loads the
+review and original timestamp from the durable journal, asks Allowly to validate
+the review and current permission, then uses the normal dispatch claim. A pending
+review returns `waiting_for_review`; a rejected, expired, or revoked review
+cannot dispatch. Replaying `executeHttp` or calling `resumeHttpExecution` does
+not continue a waiting review. Use the explicit continuation helper.
+
+The low-level equivalent is `continueExecution({ executionRequest, reviewId,
+sourceReceiptId, idempotencyKey })`. `executionRequest` must be the original
+`prepareExecution` request, including the original timestamp, but without its
+prepare idempotency key or agent token. Keep the continuation key stable across
+retries. This method returns the policy result; it does not contact the provider.
+
+For bounded polling, use `allowly.confirmations.getStatus(confirmationId)` or
+`allowly.escalations.getStatus(escalationId)`. Pass the opaque `cnf_`/`esc_` review
+ID, never a confirmation nonce. `status` records the choice; `authorityStatus`
+reports whether its grant is still available. Match the source receipt and
+original request before waking your saved job, then call Continue. Status alone
+does not permit execution. `await allowly.readiness()` tests `/readyz` only,
+not policy or provider permission.
+
+For a callback receiver, authenticate the exact raw body before parsing it:
+
+```typescript
+import { verifyResolutionWebhook } from "@allowly/sdk";
+const event = verifyResolutionWebhook(rawBody, signatureHeaders, {
+  signingSecret: configuredSecret,
+  expectedWorkspaceId: trustedWorkspaceId,
+});
+```
+
+Persist the event ID for duplicate handling and bind its prompt/source receipt
+to the saved job. Read current status before waking that job. A native Execute
+uses `continueHttpExecution` with the original operation and request; do not run
+a separate enforcing Check first. A standalone Check flow still needs its fresh
+Check before the customer's action. The HMAC authenticates delivery to its
+receiver, not a portable audit receipt or human identity.
+
+A setup/CLI client, never an agent runtime key, can use
+`resolutionWebhook.get()`, `.configure(url)`, `.rotate()`, `.disable()`, and
+`.deliveries()`. Configuration is shared by one Allowly workspace. Coordinate
+with existing consumers before changing its single callback URL or signing key.
+
+Release preparation uses the real sibling verifier source while 4.3.1 is not
+published. Restore `@allowly/verifier ^4.3.1` and regenerate the registry lock
+after publishing the verifier, before publishing this SDK. No staging source
+path belongs in a public npm tarball.
 
 The private journal stores request commitments, the approval, and a pending
 outcome upload. It does not store the provider credential or request body. Once
