@@ -258,11 +258,6 @@ Resolution webhook configuration is shared by one Allowly workspace.
 Coordinate with existing consumers before changing its single callback URL or
 signing key.
 
-Release preparation uses the real sibling verifier source while 4.3.1 is not
-published. Restore `@allowly/verifier ^4.3.1` and regenerate the registry lock
-after publishing the verifier, before publishing this SDK. No staging source
-path belongs in a public npm tarball.
-
 The private journal stores request commitments, the approval, and a pending
 outcome upload. It does not store the provider credential or request body. Once
 dispatch has been attempted, resume only uploads the same stored outcome or
