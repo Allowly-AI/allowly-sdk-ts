@@ -327,7 +327,7 @@ function signedDecisionReceipt(
   const publicDer = publicKey.export({ format: "der", type: "spki" });
   const keyId = "test-key/v1";
   const payload = {
-    schema_version: "4",
+    schema_version: "5",
     receipt_id: "rcp_customer",
     workspace_id: "ws_1",
     issued_at: "2026-09-27T12:00:01.000Z",
@@ -344,7 +344,8 @@ function signedDecisionReceipt(
       },
     },
     authorization_id: "auth_1",
-    engine_version: "2026-09-27.1",
+    engine_version: "sha256:" + "a".repeat(64),
+    policy_ref: { policy_id: "pol_fixture", policy_version: 1, definition_sha256: "b".repeat(64) },
     alg: "Ed25519",
     key_id: keyId,
     ...overrides,

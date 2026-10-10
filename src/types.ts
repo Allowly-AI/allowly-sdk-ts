@@ -466,15 +466,108 @@ export interface EscalationInfo {
   expiresAt?: string | null;
 }
 
-export interface PolicyConditionEvidence {
-  field: string;
-  op: string;
-  value: string | number | boolean | null | Array<string | number | boolean | null>;
+/** Canonical retained policy JSON. These members intentionally stay snake_case. */
+export interface PolicyReference {
+  policy_id: string;
+  policy_version: number;
+  definition_sha256: string;
 }
-
+export type PolicyScalar = string | number | boolean | null;
+export interface BasicCondition {
+  field: string;
+  op: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "exists";
+  value: PolicyScalar | PolicyScalar[];
+}
+export interface BasicRule {
+  id: string;
+  decision: Decision;
+  target: string | null;
+  conditions: BasicCondition[];
+}
+export interface BasicPolicy {
+  profile: "allowly.basic.v1";
+  action: string;
+  default_decision: Decision;
+  default_target: string | null;
+  fields: Record<string, "string" | "integer" | "boolean" | "null">;
+  rules: BasicRule[];
+}
+export interface ActionGuards {
+  resource_pattern?: string;
+  allowed_initiators?: string[];
+  max_per_day?: number;
+}
+export interface PolicyExecutableOperationGrant {
+  enabled_executable_id: string;
+  provider_id: string;
+  operation_id: string;
+  catalog_revision: string;
+  definition_fingerprint: string;
+  minimum_evidence_mode: CustomerEvidenceMode;
+}
+export interface PolicyActionEntry {
+  policy: BasicPolicy;
+  guards: ActionGuards;
+  executable_operations: PolicyExecutableOperationGrant[];
+}
+export interface PolicyDefinition {
+  profile: "allowly.policy.v1";
+  agent_id: string;
+  actions: PolicyActionEntry[];
+  default_expiry_days: number | null;
+}
+export interface ProvisionalPolicyResult {
+  profile: "allowly.basic.v1";
+  status: "ok";
+  decision: Decision;
+  target: string | null;
+  matched_rule_id: string | null;
+  evaluated_fields: Record<string, unknown>;
+}
+/** Provisional OPA evidence. Signature validation, replay and final guards are separate. */
 export interface PolicyEvalInfo {
-  matchedCondition: PolicyConditionEvidence | null;
-  fieldValue: string | number | boolean | null;
+  input_sha256: string;
+  result: ProvisionalPolicyResult;
+}
+export interface PolicyCreateRequest {
+  policyId: string;
+  definition: PolicyDefinition;
+  description?: string;
+  previousPolicyRef?: PolicyReference;
+  idempotencyKey?: string;
+}
+export interface PolicyResponse {
+  policyRef: PolicyReference;
+  definition: PolicyDefinition;
+  description: string | null;
+  createdBy: string | null;
+  createdAt: string | null;
+  deletedAt: string | null;
+}
+export interface PolicyListResponse {
+  items: PolicyResponse[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+export interface PolicyPreviewRequest {
+  definition: PolicyDefinition;
+  action: string;
+  context: Record<string, unknown>;
+}
+export interface PolicyPreviewResponse {
+  provisional: true;
+  definitionSha256: string;
+  action: string;
+  policyEval: PolicyEvalInfo;
+}
+export interface PolicyPublishResponse {
+  policyRef: PolicyReference;
+  agentId: string;
+  createdBy: string;
+  createdAt: string;
+  authorizationMigrations: Array<{ user_id: string; previous_authorization_id: string; authorization_id: string }>;
+  archivedPolicyIds: string[];
+  revokedConfirmationCount: number;
 }
 
 export interface ActionCheckResultBase {
@@ -530,73 +623,31 @@ export interface CheckResponse {
   billingWarning?: string;
 }
 
-export interface ActionEntry {
-  name: string;
-  constraints?: Record<string, unknown>;
-  /** Exact executable operations granted to this action. Empty means none. */
-  executableOperations?: ExecutableOperationGrant[];
-}
-
-export interface ExecutableOperationGrant {
-  enabledExecutableId: string;
-  providerId: string;
-  operationId: string;
-  catalogRevision: string;
-  definitionFingerprint: string;
-  minimumEvidenceMode: CustomerEvidenceMode;
-}
-
-interface AuthorizationCreateBase {
+/** Grant a names-only subset of one exact immutable logical policy edition. */
+export interface AuthorizationCreateRequest {
   userId: string;
+  policyId: string;
+  policyVersion: number;
+  actions?: string[];
+  expiresAt?: Date | string;
   budgetLimitMicros?: number;
   replaces?: string;
   metadata?: Record<string, unknown>;
   idempotencyKey?: string;
 }
 
-interface AuthorizationCreateInlineControls {
-  requiresConfirmFor?: string[];
-  requiresEscalationFor?: string[];
-  requiresDenyFor?: string[];
-  escalationTargets?: Record<string, string>;
-}
-
-/**
- * Canonical flow: pass `policyId` referencing a reusable agent policy
- * (`expiresAt` optional — the policy's default expiry applies). Inline flow
- * (`agentId` + `actions`, no `policyId`) is for prototyping and ad-hoc
- * per-user grants and requires an explicit `expiresAt`. Exactly one of the
- * two shapes must be used; the runtime rejects mixed shapes with 422.
- */
-export type AuthorizationCreateRequest =
-  | (AuthorizationCreateBase & {
-      policyId: string;
-      agentId?: never;
-      actions?: never;
-      expiresAt?: Date | string;
-    })
-  | (AuthorizationCreateBase & AuthorizationCreateInlineControls & {
-      policyId?: never;
-      agentId: string;
-      actions: ActionEntry[] | string[];
-      expiresAt: Date | string;
-    });
-
 export interface AuthorizationCreateResponse {
   authorizationId: string;
-  policyId: string | null;
+  policyRef: PolicyReference;
+  actions: string[];
   createdAt: string;
   expiresAt: string;
   receipt: ReceiptEnvelopePending;
-  requiresConfirmFor: string[];
-  requiresEscalationFor: string[];
-  requiresDenyFor: string[];
-  escalationTargets: Record<string, string>;
   budgetLimitMicros: number | null;
   budgetSpentMicros: number | null;
   replacedAuthorizationId: string | null;
   revocationReceipt: ReceiptEnvelopePending | null;
-  authorizationProvenance: Record<string, unknown> | null;
+  authorizationProvenance: Record<string, unknown>;
   /** X-Allowly-Billing-Warning response header, when present. */
   billingWarning?: string;
 }
@@ -616,7 +667,7 @@ export interface ConfirmationApproveRequest {
 
 export type ConfirmationApproveResponse = (
   | { decision: "approved"; authorizationId: string; expiresAt: string }
-  | { decision: "not_approved" | "denied_by_user"; authorizationId: null; expiresAt: null }
+  | { decision: "not_approved"; authorizationId: null; expiresAt: null }
 ) & { receipt?: ReceiptEnvelopePending | null };
 
 export type PromptStatus = PromptStatusResponse["status"];

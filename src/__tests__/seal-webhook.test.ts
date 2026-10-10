@@ -83,7 +83,7 @@ describe("SealWebhookClient", () => {
 
   it("fetches scoped status, receipt, and keys from the private URL", async () => {
     const signedReceipt = {
-      schema_version: "4",
+      schema_version: "5",
       receipt_id: "rcp_test",
       workspace_id: "ws_test",
     };
@@ -138,7 +138,7 @@ describe("SealWebhookClient", () => {
     const fetch = vi.fn().mockResolvedValue(response(200, delivery({
       status: "sealed",
       receipt: {
-        schema_version: "4",
+        schema_version: "5",
         receipt_id: "rcp_other",
         workspace_id: "ws_test",
       },
@@ -178,7 +178,7 @@ describe("SealWebhookClient", () => {
       const body = delivery({
         status: "sealed",
         receipt: {
-          schema_version: "4",
+          schema_version: "5",
           receipt_id: "rcp_test",
           workspace_id: "ws_test",
           context: { seal_metadata: signedMetadata },
@@ -199,7 +199,7 @@ describe("SealWebhookClient", () => {
       status: "sealed",
       metadata: { reference: "UNSIGNED" },
       receipt: {
-        schema_version: "4",
+        schema_version: "5",
         receipt_id: "rcp_test",
         workspace_id: "ws_test",
         context: { seal_metadata: { reference: "SIGNED" } },
@@ -215,7 +215,7 @@ describe("SealWebhookClient", () => {
     const fetch = vi.fn().mockResolvedValue(response(200, delivery({
       status: "sealed",
       receipt: {
-        schema_version: "4",
+        schema_version: "5",
         receipt_id: "rcp_test",
         workspace_id: "ws_test",
         context: { seal_metadata: { reference: 42 } },

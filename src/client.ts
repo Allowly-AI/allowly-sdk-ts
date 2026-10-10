@@ -1,5 +1,6 @@
 import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
 import { ResolutionWebhookResource } from "./resolution-webhook.js";
+import { PoliciesResource, parsePolicyEvaluation, parsePolicyReference, document, exact, integer, strings, text } from "./policies.js";
 import {
   SEAL_ACTION,
   SEAL_AGENT_ID,
@@ -26,7 +27,6 @@ import type {
   BudgetInfo,
   BudgetSettlementResponse,
   EscalationInfo,
-  PolicyConditionEvidence,
   PolicyEvalInfo,
   EscalationResolveRequest,
   EscalationResolveResponse,
@@ -82,6 +82,7 @@ export class Allowly {
   private readonly requestTimeoutMs: number;
   private readonly fallbackByAction: Record<string, FallbackMode>;
 
+  readonly policies: PoliciesResource;
   readonly authorizations: AuthorizationsResource;
   readonly confirmations: ConfirmationsResource;
   readonly escalations: EscalationsResource;
@@ -113,6 +114,7 @@ export class Allowly {
       ])
     );
 
+    this.policies = new PoliciesResource(this);
     this.authorizations = new AuthorizationsResource(this);
     this.confirmations = new ConfirmationsResource(this);
     this.escalations = new EscalationsResource(this);
@@ -645,87 +647,52 @@ class AuthorizationsResource {
   constructor(private readonly client: Allowly) {}
 
   async create(req: AuthorizationCreateRequest): Promise<AuthorizationCreateResponse> {
-    if (req.policyId !== undefined) {
-      const runtimeReq = req as unknown as Record<string, unknown>;
-      const override = [
-        ["requiresConfirmFor", runtimeReq.requiresConfirmFor],
-        ["requiresEscalationFor", runtimeReq.requiresEscalationFor],
-        ["requiresDenyFor", runtimeReq.requiresDenyFor],
-        ["escalationTargets", runtimeReq.escalationTargets],
-      ].find(([, value]) => value !== undefined);
-      if (override) throw new Error(`policyId cannot be combined with ${override[0]}`);
-    }
+    exact(req, ["userId", "policyId", "policyVersion"], "authorization request",
+      ["actions", "expiresAt", "budgetLimitMicros", "replaces", "metadata", "idempotencyKey"]);
+    text(req.userId, "userId");
+    const policyId = text(req.policyId, "policyId");
+    const policyVersion = integer(req.policyVersion, "policyVersion");
+    const requestedActions = req.actions === undefined ? undefined : [...strings(req.actions, "actions", 32, 64)];
+    if (req.budgetLimitMicros !== undefined) integer(req.budgetLimitMicros, "budgetLimitMicros", 0);
+    if (req.replaces !== undefined) text(req.replaces, "replaces");
     const expiresAt = req.expiresAt instanceof Date ? req.expiresAt.toISOString() : req.expiresAt;
-    const actions = req.actions?.map((s) =>
-      typeof s === "string"
-        ? { name: s, constraints: {} }
-        : {
-          name: s.name,
-          constraints: s.constraints ?? {},
-          ...(s.executableOperations !== undefined && s.executableOperations.length > 0
-            ? {
-              executable_operations: s.executableOperations.map((grant) => ({
-                enabled_executable_id: grant.enabledExecutableId,
-                provider_id: grant.providerId,
-                operation_id: grant.operationId,
-                catalog_revision: grant.catalogRevision,
-                definition_fingerprint: grant.definitionFingerprint,
-                minimum_evidence_mode: grant.minimumEvidenceMode,
-              })),
-            }
-            : {}),
-        }
-    );
-    const inlineDecisionOverrides = req.policyId === undefined
-      ? {
-          requires_confirm_for: req.requiresConfirmFor ?? [],
-          requires_escalation_for: req.requiresEscalationFor ?? [],
-          requires_deny_for: req.requiresDenyFor ?? [],
-          escalation_targets: req.escalationTargets ?? {},
-        }
-      : {};
-    const { data: raw, headers } = await this.client.requestWithHeaders<Record<string, unknown>>(
-      "POST",
-      "/v1/authorizations",
-      {
-        user_id: req.userId,
-        agent_id: req.agentId,
-        policy_id: req.policyId,
-        actions,
-        ...inlineDecisionOverrides,
-        budget_limit_micros: req.budgetLimitMicros,
-        expires_at: expiresAt,
-        replaces: req.replaces,
-        metadata: req.metadata ?? {},
-      },
-      {
-        headers: req.idempotencyKey !== undefined
-          ? { "Idempotency-Key": req.idempotencyKey }
-          : undefined,
+    const { data: value, headers } = await this.client.requestWithHeaders<unknown>(
+      "POST", "/v1/authorizations", {
+        user_id: req.userId, policy_id: policyId, policy_version: policyVersion,
+        ...(requestedActions !== undefined ? { actions: requestedActions } : {}),
+        ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
+        ...(req.budgetLimitMicros !== undefined ? { budget_limit_micros: req.budgetLimitMicros } : {}),
+        ...(req.replaces !== undefined ? { replaces: req.replaces } : {}),
+        metadata: document(req.metadata ?? {}, "metadata", 4096),
+      }, {
+        headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
         expectedStatus: 201,
-      },
-    );
+      });
+    const raw = exact(value,
+      ["authorization_id", "policy_ref", "actions", "created_at", "expires_at", "receipt", "authorization_provenance"],
+      "authorization response", ["budget_limit_micros", "budget_spent_micros", "replaced_authorization_id", "revocation_receipt"]);
+    const policyRef = parsePolicyReference(raw.policy_ref);
+    if (policyRef.policy_id !== policyId || policyRef.policy_version !== policyVersion) {
+      throw new AllowlyProtocolError("authorization policy_ref does not match the requested edition");
+    }
+    const actions = strings(raw.actions, "actions", 32, 64);
+    if (requestedActions !== undefined && JSON.stringify(actions) !== JSON.stringify(requestedActions)) {
+      throw new AllowlyProtocolError("authorization actions do not match the requested scope");
+    }
+    for (const key of ["budget_limit_micros", "budget_spent_micros"]) {
+      if (raw[key] !== undefined && raw[key] !== null) integer(raw[key], key, 0);
+    }
     const billingWarning = headers.get("X-Allowly-Billing-Warning");
     return {
       ...(billingWarning !== null ? { billingWarning } : {}),
-      authorizationId: requireString(raw, "authorization_id"),
-      policyId: optionalString(raw, "policy_id"),
-      createdAt: requireString(raw, "created_at"),
-      expiresAt: requireString(raw, "expires_at"),
+      authorizationId: requireString(raw, "authorization_id"), policyRef, actions,
+      createdAt: requireString(raw, "created_at"), expiresAt: requireString(raw, "expires_at"),
       receipt: parsePendingEnvelope(raw.receipt),
-      requiresConfirmFor: requireStringArray(raw, "requires_confirm_for"),
-      requiresEscalationFor: requireStringArray(raw, "requires_escalation_for"),
-      requiresDenyFor: requireStringArray(raw, "requires_deny_for"),
-      escalationTargets: requireStringMap(raw, "escalation_targets"),
       budgetLimitMicros: optionalNumber(raw, "budget_limit_micros"),
       budgetSpentMicros: optionalNumber(raw, "budget_spent_micros"),
       replacedAuthorizationId: optionalString(raw, "replaced_authorization_id"),
-      revocationReceipt: raw.revocation_receipt == null
-        ? null
-        : parsePendingEnvelope(raw.revocation_receipt),
-      authorizationProvenance: raw.authorization_provenance == null
-        ? null
-        : requireRecord(raw.authorization_provenance, "authorization provenance"),
+      revocationReceipt: raw.revocation_receipt == null ? null : parsePendingEnvelope(raw.revocation_receipt),
+      authorizationProvenance: document(raw.authorization_provenance, "authorization_provenance"),
     };
   }
 
@@ -787,7 +754,7 @@ class ConfirmationsResource {
       },
     );
     const decision = requireString(raw, "decision");
-    if (decision !== "approved" && decision !== "not_approved" && decision !== "denied_by_user") {
+    if (decision !== "approved" && decision !== "not_approved") {
       throw new AllowlyProtocolError(`unknown confirmation decision: ${JSON.stringify(decision)}`);
     }
     const receipt = raw.receipt === undefined || raw.receipt === null
@@ -1068,12 +1035,16 @@ function parseCheckResponse(
   ) {
     throw new AllowlyProtocolError("check results must exactly match the requested actions");
   }
+  const engineVersion = requireString(raw, "engine_version");
+  if (!/^sha256:[0-9a-f]{64}$/.test(engineVersion)) {
+    throw new AllowlyProtocolError("engine_version must identify the full engine manifest by SHA-256");
+  }
   return {
     userId: optionalString(raw, "user_id"),
     agentId: optionalString(raw, "agent_id"),
     authorizationId,
     authorizationExpiresAt: optionalString(raw, "authorization_expires_at"),
-    engineVersion: requireString(raw, "engine_version"),
+    engineVersion,
     results: Object.fromEntries(
       Object.entries(rawResults).map(([action, value]) => {
         const result = requireRecord(value, `check result ${JSON.stringify(action)}`);
@@ -1247,7 +1218,7 @@ function validateSealReceipt(
     throw new AllowlyProtocolError("seal receipt_id does not match the pending receipt");
   }
   const expectedFields: Record<string, string> = {
-    schema_version: "4",
+    schema_version: "5",
     action: SEAL_ACTION,
     decision: "allow",
     agent_id: SEAL_AGENT_ID,
@@ -1296,14 +1267,6 @@ function requireStringArray(raw: Record<string, unknown>, key: string): string[]
     throw new AllowlyProtocolError(`${key} must be an array of strings`);
   }
   return value as string[];
-}
-
-function requireStringMap(raw: Record<string, unknown>, key: string): Record<string, string> {
-  const value = requireRecord(raw[key], key);
-  if (!Object.values(value).every((mapValue) => typeof mapValue === "string")) {
-    throw new AllowlyProtocolError(`${key} values must be strings`);
-  }
-  return value as Record<string, string>;
 }
 
 function optionalString(raw: Record<string, unknown>, key: string): string | null {
@@ -1375,19 +1338,8 @@ function parseEscalationInfo(raw: unknown): EscalationInfo | null {
   };
 }
 
-function parsePolicyEval(raw: unknown): PolicyEvalInfo | null {
-  if (raw == null) return null;
-  const policyEval = requireRecord(raw, "policy evaluation");
-  const matched = policyEval.matched_condition;
-  const condition = matched == null ? null : requireRecord(matched, "matched policy condition");
-  return {
-    matchedCondition: condition ? {
-      field: requireString(condition, "field"),
-      op: requireString(condition, "op"),
-      value: (condition.value ?? null) as PolicyConditionEvidence["value"],
-    } : null,
-    fieldValue: (policyEval.field_value ?? null) as PolicyEvalInfo["fieldValue"],
-  };
+function parsePolicyEval(value: unknown): PolicyEvalInfo | null {
+  return value == null ? null : parsePolicyEvaluation(value);
 }
 
 function validateFallbackMode(mode: string): FallbackMode {

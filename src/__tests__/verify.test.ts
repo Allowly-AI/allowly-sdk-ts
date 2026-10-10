@@ -42,12 +42,12 @@ function signedPolicyEvalReceipt() {
   const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
   const keyId = "test-key/v1";
   const payload = {
-    schema_version: "4",
+    schema_version: "5",
     receipt_id: "rcp_policy_eval",
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
     decision: "confirm",
-    reason: "confirm_condition_matched",
+    reason: "policy_rule_matched",
     user_id: "cand_55ab2",
     agent_id: "scout_referrals",
     action: "hiring.publish_feedback",
@@ -57,16 +57,17 @@ function signedPolicyEvalReceipt() {
       checks_failed: "pii_detected",
     },
     authorization_id: "auth_conditional",
-    engine_version: "2026-06-01.2",
+    engine_version: "sha256:" + "a".repeat(64),
+    policy_ref: { policy_id: "pol_fixture", policy_version: 1, definition_sha256: "b".repeat(64) },
     alg: "Ed25519",
     key_id: keyId,
     policy_eval: {
-      matched_condition: {
-        field: "checks_failed",
-        op: "in",
-        value: ["pii_detected", "tone_flag"],
+      input_sha256: "c".repeat(64),
+      result: {
+        profile: "allowly.basic.v1", status: "ok", decision: "confirm",
+        target: "agent_owner", matched_rule_id: "needs_review",
+        evaluated_fields: { checks_failed: "pii_detected" },
       },
-      field_value: "pii_detected",
     },
   };
   const signature = sign(null, canonicalize(payload), privateKey);
@@ -96,7 +97,7 @@ function signedSealReceipt(rawJson: string) {
   const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
   const keyId = "seal-key/v1";
   const payload = {
-    schema_version: "4",
+    schema_version: "5",
     receipt_id: "rcp_seal",
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
@@ -111,7 +112,8 @@ function signedSealReceipt(rawJson: string) {
       record_sha256: hashSealJson(rawJson),
     },
     authorization_id: "auth_seal",
-    engine_version: "2026-06-01.2",
+    engine_version: "sha256:" + "a".repeat(64),
+    policy_ref: { policy_id: "pol_fixture", policy_version: 1, definition_sha256: "b".repeat(64) },
     alg: "Ed25519",
     key_id: keyId,
   };
@@ -274,7 +276,7 @@ describe("loadKeysFromJson", () => {
 });
 
 describe("verifyReceipt", () => {
-  it("accepts a wire-4 receipt whose algorithm and key id are signed", async () => {
+  it("accepts a wire-5 receipt whose algorithm and key id are signed", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
 
@@ -295,7 +297,7 @@ describe("verifyReceipt", () => {
         expectedWorkspaceId: "ws_1",
         now: new Date("2026-06-09T17:05:00Z"),
       }),
-    ).rejects.toThrow('unsupported schema_version: "3" (want "4")');
+    ).rejects.toThrow('unsupported schema_version: "3" (want "5")');
   });
 
   it("rejects policy_eval on event receipts", async () => {
@@ -325,12 +327,9 @@ describe("verifyReceipt", () => {
     const badReceipt = {
       ...receipt,
       policy_eval: {
-        matched_condition: {
-          field: "transcript_completeness",
-          op: "eq",
-          value: Number.MAX_SAFE_INTEGER + 1,
-        },
-        field_value: 1,
+        ...receipt.policy_eval,
+        result: { ...receipt.policy_eval.result,
+          evaluated_fields: { transcript_completeness: Number.MAX_SAFE_INTEGER + 1 } },
       },
     };
 

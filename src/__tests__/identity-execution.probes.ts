@@ -5,7 +5,7 @@ import type {
   NativeAgentCredentialData,
 } from "../index.js";
 import type {
-  ActionEntry,
+  PolicyActionEntry,
   CustomerExecutionResponse,
   ContinueExecutionRequest,
   PrepareExecutionRequest,
@@ -54,18 +54,18 @@ const greenhouseCandidateListCommitment = commitCustomerHttpRequest(
 );
 
 const executableAction = {
-  name: "greenhouse.candidates.list",
-  executableOperations: [{
-    enabledExecutableId: "exe_123",
-    providerId: "greenhouse-harvest",
-    operationId: "greenhouse.candidates.list",
-    catalogRevision:
-      "sha256:b1674bd5fd8889f064ce4fb6b820cffce76e1e449cefa6aefe2802f85639cf6a",
-    definitionFingerprint:
-      "sha256:0d3deed80ddcfd384aefd12d57f800903811b1a6d01d764caf8f24e64de26498",
-    minimumEvidenceMode: "receipt",
+  policy: { profile: "allowly.basic.v1", action: "greenhouse.candidates.list",
+    default_decision: "allow", default_target: null, fields: {}, rules: [] },
+  guards: {},
+  executable_operations: [{
+    enabled_executable_id: "exe_123",
+    provider_id: "greenhouse-harvest",
+    operation_id: "greenhouse.candidates.list",
+    catalog_revision: "sha256:b1674bd5fd8889f064ce4fb6b820cffce76e1e449cefa6aefe2802f85639cf6a",
+    definition_fingerprint: "sha256:0d3deed80ddcfd384aefd12d57f800903811b1a6d01d764caf8f24e64de26498",
+    minimum_evidence_mode: "receipt",
   }],
-} satisfies ActionEntry;
+} satisfies PolicyActionEntry;
 
 ({
   operationId: "greenhouse-candidates-list-page-1",
@@ -173,11 +173,15 @@ const webhookEvent: import("../index.js").ResolutionWebhookEvent = verifyResolut
 });
 void webhookConfig; void webhookSecret; void webhookDeliveries; void webhookEvent;
 
+void client.policies.create({
+  policyId: "greenhouse-agent", definition: {
+    profile: "allowly.policy.v1", agent_id: "agent_123",
+    actions: [executableAction], default_expiry_days: null,
+  },
+});
 void client.authorizations.create({
-  userId: "user_123",
-  agentId: "agent_123",
-  actions: [executableAction],
-  expiresAt: "2026-12-31T00:00:00Z",
+  userId: "user_123", policyId: "greenhouse-agent", policyVersion: 1,
+  actions: ["greenhouse.candidates.list"], expiresAt: "2027-01-01T00:00:00Z",
 });
 
 void client.acknowledgeReceipt({
