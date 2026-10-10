@@ -4,6 +4,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/prom
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { signedReceipt as wrapReceipt } from "./jws-fixture.js";
 
 const mocks = vi.hoisted(() => ({
   dnsLookup: vi.fn(),
@@ -350,10 +351,7 @@ function signedDecisionReceipt(
     key_id: keyId,
     ...overrides,
   };
-  const receipt = {
-    ...payload,
-    signature: Buffer.from(sign(null, canonicalize(payload), privateKey)).toString("base64url"),
-  };
+  const receipt = wrapReceipt(payload, privateKey);
   const keys = loadKeysFromJson({
     workspace_id: "ws_1",
     keys: [{

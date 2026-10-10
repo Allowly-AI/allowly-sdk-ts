@@ -511,11 +511,17 @@ const receipt = await allowly.receipts.fetchSigned(receiptId);
 const workspaceId = process.env.ALLOWLY_WORKSPACE_ID!;
 const keys = loadKeysFromJson(await fetchKeysDoc(workspaceId));
 
-await verifyReceipt(receipt, keys, { expectedWorkspaceId: workspaceId });
+const claims = await verifyReceipt(receipt, keys, { expectedWorkspaceId: workspaceId });
+console.log(claims.decision);
 ```
 
 Take the expected workspace ID from trusted application configuration, not from
 the receipt being verified.
+
+The receipt is a flattened JWS with only `protected`, `payload`, and `signature`
+fields. Store and share that original envelope. `verifyReceipt` returns the
+verified claims for decisions and request binding. `decodeReceipt` only reads
+claims for display; it does not prove their signature or grant permission.
 
 ## Documentation
 

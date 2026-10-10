@@ -1,3 +1,5 @@
+import type { JwsReceipt } from "@allowly/verifier";
+
 export type Decision = "allow" | "deny" | "confirm" | "escalate";
 export type FallbackMode = "fail_open" | "fail_closed";
 
@@ -65,7 +67,7 @@ export interface ReceiptEnvelopePending {
 
 export interface ReceiptEnvelopeSigned {
   status: "signed";
-  receipt: Record<string, unknown>;
+  receipt: JwsReceipt;
 }
 
 export type ReceiptEnvelope = ReceiptEnvelopePending | ReceiptEnvelopeSigned;
@@ -86,7 +88,7 @@ export interface SealResponse {
   recordSha256: string;
   decision: "allow";
   reason: string;
-  receipt: Record<string, unknown>;
+  receipt: JwsReceipt;
 }
 
 export interface SealWebhookDelivery {
@@ -103,7 +105,7 @@ export interface SealWebhookDelivery {
   statusUrl: string;
   receiptUrl: string | null;
   keysUrl: string;
-  receipt: Record<string, unknown> | null;
+  receipt: JwsReceipt | null;
 }
 
 export interface SealWebhookClientOptions {

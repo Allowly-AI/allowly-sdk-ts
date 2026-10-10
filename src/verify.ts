@@ -7,6 +7,7 @@ import {
   SEAL_USER_ID,
   SealInputError,
   canonicalize,
+  decodeReceipt,
   hashSealJson,
   hashSealValue,
   type KeyDocument,
@@ -27,6 +28,7 @@ export {
   SEAL_USER_ID,
   SealInputError,
   canonicalize,
+  decodeReceipt,
   hashSealJson,
   hashSealValue,
   loadKeysFromJson,
@@ -36,6 +38,8 @@ export {
 export type {
   PublicKey,
   Receipt,
+  ReceiptPayload,
+  JwsReceipt,
   KeyDocument,
   SealInputFailure,
   SealVerificationFailure,
@@ -137,7 +141,7 @@ export async function verifyReceipt(
     trustedKeyFingerprints?: ReadonlySet<string>;
     now?: Date;
   },
-): Promise<void> {
+): Promise<import("@allowly/verifier").ReceiptPayload> {
   return verifyReceiptReference(receipt, publicKeys, opts);
 }
 

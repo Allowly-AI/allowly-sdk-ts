@@ -8,6 +8,8 @@ import {
   SEAL_USER_ID,
   hashSealJson,
   hashSealValue,
+  decodeReceipt,
+  type JwsReceipt,
 } from "./verify.js";
 import type {
   AllowlyOptions,
@@ -855,7 +857,7 @@ class ReceiptsResource {
       /** Total timeout in seconds. Defaults to 120. */
       timeout?: number;
     } = {}
-  ): Promise<Record<string, unknown>> {
+  ): Promise<JwsReceipt> {
     const pollInterval = (opts.pollInterval ?? 1) * 1000;
     // Default timeout covers the signer's once-per-minute batch tick plus
     // scheduling/cold-start allowance; valid service behavior can take just
@@ -875,7 +877,7 @@ class ReceiptsResource {
         try {
           const envelope = await this.getWithSignal(receiptId, controller.signal);
           if (envelope.status === "signed" && Date.now() < deadline) {
-            if (requireString(envelope.receipt, "receipt_id") !== receiptId) {
+            if (decodeReceipt(envelope.receipt).receipt_id !== receiptId) {
               throw new AllowlyProtocolError(
                 "signed receipt_id does not match the requested receipt",
               );
@@ -991,7 +993,13 @@ function parsePendingEnvelope(value: unknown): ReceiptEnvelopePending {
 function parseReceiptEnvelope(value: unknown): ReceiptEnvelope {
   const raw = requireRecord(value, "receipt envelope");
   if (raw.status === "signed") {
-    return { status: "signed", receipt: requireRecord(raw.receipt, "signed receipt") };
+    const receipt = requireRecord(raw.receipt, "signed receipt");
+    try {
+      decodeReceipt(receipt);
+    } catch (error) {
+      throw new AllowlyProtocolError(`invalid signed receipt: ${String(error)}`);
+    }
+    return { status: "signed", receipt: receipt as JwsReceipt };
   }
   if (raw.status === "pending") return parsePendingEnvelope(raw);
   throw new AllowlyProtocolError("receipt status must be 'pending' or 'signed'");
@@ -1210,6 +1218,11 @@ function validateSealReceipt(
   expectedWorkspaceId: string,
   expectedReceiptId?: string,
 ): void {
+  try {
+    receipt = { ...decodeReceipt(receipt) };
+  } catch (error) {
+    throw new AllowlyProtocolError(`invalid SEAL receipt: ${String(error)}`);
+  }
   const receiptId = requireString(receipt, "receipt_id");
   if (receiptId.length === 0) {
     throw new AllowlyProtocolError("seal receipt_id must be non-empty");
@@ -1223,7 +1236,6 @@ function validateSealReceipt(
     decision: "allow",
     agent_id: SEAL_AGENT_ID,
     user_id: SEAL_USER_ID,
-    alg: "Ed25519",
   };
   for (const [key, expected] of Object.entries(expectedFields)) {
     if (requireString(receipt, key) !== expected) {
@@ -1232,11 +1244,6 @@ function validateSealReceipt(
   }
   if (requireString(receipt, "workspace_id") !== expectedWorkspaceId) {
     throw new AllowlyProtocolError("seal receipt workspace_id does not match the response");
-  }
-  for (const key of ["key_id", "signature"]) {
-    if (requireString(receipt, key).length === 0) {
-      throw new AllowlyProtocolError(`seal receipt ${key} must be non-empty`);
-    }
   }
   const context = requireRecord(receipt.context, "seal receipt context");
   if (requireString(context, "seal_profile") !== SEAL_PROFILE) {
@@ -1580,7 +1587,7 @@ function parseCustomerExecutionResponse(value: unknown): CustomerExecutionRespon
   if (status === "waiting_for_review"
       && (review === null || review.kind !== decision
         || review.sourceReceiptId !== (decisionReceipt.status === "pending"
-          ? decisionReceipt.receiptId : decisionReceipt.receipt.receipt_id)
+          ? decisionReceipt.receiptId : decodeReceipt(decisionReceipt.receipt).receipt_id)
         || decisionState !== "not_allowed" || targetState !== "not_started"
         || approval !== null || downstream !== null || evidenceState !== "pending")) {
     throw new AllowlyProtocolError("waiting customer execution is not bound to a review");

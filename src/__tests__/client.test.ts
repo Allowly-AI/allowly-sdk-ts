@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { signedReceipt as wrapReceipt, changedReceipt } from "./jws-fixture.js";
 import {
   Allowly,
   AllowlyAPIError,
@@ -1175,7 +1176,7 @@ describe("check confirmation monitor identity", () => {
 
 describe("Allowly.seal", () => {
   const recordSha256 = "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777";
-  const signedReceipt = {
+  const signedReceipt = wrapReceipt({
     schema_version: "5",
     receipt_id: "rcp_abc",
     workspace_id: "ws_test",
@@ -1196,7 +1197,7 @@ describe("Allowly.seal", () => {
     alg: "Ed25519",
     key_id: "test-key/v1",
     signature: "signature",
-  };
+  });
 
   it("hashes raw JSON locally, posts only the digest, and polls until signed", async () => {
     const fetch = vi.fn()
@@ -1310,7 +1311,7 @@ describe("Allowly.seal", () => {
       reason: "authorization_granted_action_active",
       receipt: {
         status: "signed",
-        receipt: { ...signedReceipt, action: "record.publish" },
+        receipt: changedReceipt(signedReceipt, { action: "record.publish" }),
       },
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -1332,7 +1333,7 @@ describe("Allowly.seal", () => {
       }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         status: "signed",
-        receipt: { ...signedReceipt, receipt_id: "rcp_other" },
+        receipt: changedReceipt(signedReceipt, { receipt_id: "rcp_other" }),
       }), { status: 200 }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
@@ -1353,7 +1354,7 @@ describe("Allowly.receipts.get", () => {
   });
 
   it("returns signed envelope", async () => {
-    const signedReceipt = { schema_version: "5", receipt_id: "rcp_abc", decision: "allow", alg: "Ed25519", key_id: "k", signature: "sig" };
+    const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc", decision: "allow", key_id: "k" });
     const fetch = makeFetch(200, { status: "signed", receipt: signedReceipt });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const r = await client.receipts.get("rcp_abc");
@@ -1369,7 +1370,7 @@ describe("Allowly.receipts.get", () => {
 
 describe("Allowly.receipts.fetchSigned", () => {
   it("polls until signed and returns receipt dict", async () => {
-    const signedReceipt = { schema_version: "5", receipt_id: "rcp_abc" };
+    const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
     let call = 0;
     const fetch = vi.fn().mockImplementation(async () => {
       call++;
@@ -1385,7 +1386,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   });
 
   it("continues polling across transport, HTTP 408, and HTTP 5xx failures", async () => {
-    const signedReceipt = { schema_version: "5", receipt_id: "rcp_abc" };
+    const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
     const fetch = vi.fn()
       .mockRejectedValueOnce(new TypeError("offline"))
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -1410,7 +1411,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   it("honors Retry-After while retrying HTTP 429", async () => {
     vi.useFakeTimers();
     try {
-      const signedReceipt = { schema_version: "5", receipt_id: "rcp_abc" };
+      const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
       const fetch = vi.fn()
         .mockResolvedValueOnce(new Response(JSON.stringify({
           error: { code: "rate_limited", message: "slow down" },
@@ -1474,7 +1475,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   it("default timeout covers one >60s signer tick; explicit shorter timeout still fails", async () => {
     vi.useFakeTimers();
     try {
-      const signedReceipt = { schema_version: "5", receipt_id: "rcp_abc" };
+      const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
       const start = Date.now();
       const fetch = vi.fn().mockImplementation(async () => ({
         ok: true,

@@ -1,5 +1,6 @@
 import { AllowlyTransportError } from "./client.js";
 import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
+import { decodeReceipt, type JwsReceipt } from "./verify.js";
 import type {
   AllowlyError,
   SealWebhookClientOptions,
@@ -226,13 +227,19 @@ function parseDelivery(value: unknown): SealWebhookDelivery {
   const receipt = optionalRecord(raw, "receipt");
   let metadata = optionalMetadata(raw.metadata, "SEAL webhook response metadata");
   if (receipt !== null) {
-    if (receiptId === null || receipt.receipt_id !== receiptId) {
+    let claims;
+    try {
+      claims = decodeReceipt(receipt);
+    } catch (error) {
+      throw new AllowlyProtocolError(`invalid SEAL webhook receipt: ${String(error)}`);
+    }
+    if (receiptId === null || claims.receipt_id !== receiptId) {
       throw new AllowlyProtocolError("SEAL webhook receipt_id binding does not match");
     }
-    if (receipt.workspace_id !== workspaceId) {
+    if (claims.workspace_id !== workspaceId) {
       throw new AllowlyProtocolError("SEAL webhook workspace_id binding does not match");
     }
-    const context = optionalRecord(receipt, "context");
+    const context = claims.context;
     const signedMetadata = optionalMetadata(
       context?.seal_metadata,
       "signed SEAL receipt metadata",
@@ -258,7 +265,7 @@ function parseDelivery(value: unknown): SealWebhookDelivery {
     statusUrl: requireString(raw, "status_url"),
     receiptUrl: optionalString(raw, "receipt_url"),
     keysUrl: requireString(raw, "keys_url"),
-    receipt,
+    receipt: receipt as JwsReceipt | null,
   };
 }
 

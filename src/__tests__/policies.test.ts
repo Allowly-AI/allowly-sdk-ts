@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { Allowly, AllowlyAPIError, AllowlyProtocolError } from "../index.js";
+import { Allowly, AllowlyAPIError, AllowlyProtocolError, decodeReceipt } from "../index.js";
 import { definitionDigest, parsePolicyEvaluation, parsePolicyReference, validatePolicyDefinition } from "../policies.js";
 import type { PolicyDefinition } from "../types.js";
 
@@ -19,8 +19,8 @@ function mockFetch(status: number, value: unknown) { return vi.fn().mockResolved
 describe("canonical policy JSON", () => {
   it.each(vectors.signature_cases)("keeps shared $name evidence without renaming or recalculating it", item => {
     expect(validatePolicyDefinition(item.definition)).toEqual(item.definition);
-    expect(parsePolicyEvaluation(item.receipt.policy_eval)).toEqual(item.receipt.policy_eval);
-    expect(parsePolicyReference(item.receipt.policy_ref)).toEqual(item.receipt.policy_ref);
+    expect(parsePolicyEvaluation(decodeReceipt(item.receipt).policy_eval)).toEqual(decodeReceipt(item.receipt).policy_eval);
+    expect(parsePolicyReference(decodeReceipt(item.receipt).policy_ref)).toEqual(decodeReceipt(item.receipt).policy_ref);
   });
 
   const invalid: Array<[string, (value: any) => void]> = [
@@ -83,11 +83,11 @@ describe("canonical policy JSON", () => {
     ["float fields", e => e.result.evaluated_fields = { risk: 1.5 }],
   ];
   it.each(badEvidence)("rejects malformed provisional evidence: %s", (_name, edit) => {
-    const value = structuredClone(vectors.signature_cases[1].receipt.policy_eval); edit(value);
+    const value = structuredClone(decodeReceipt(vectors.signature_cases[1].receipt).policy_eval!); edit(value);
     expect(() => parsePolicyEvaluation(value)).toThrow(AllowlyProtocolError);
   });
   it("retains arbitrary canonical JSON reported by an exists condition", () => {
-    const value = structuredClone(vectors.signature_cases[1].receipt.policy_eval);
+    const value = structuredClone(decodeReceipt(vectors.signature_cases[1].receipt).policy_eval!);
     value.result.evaluated_fields = { value: { present: [null, true, 0, "nested"] } };
     expect(parsePolicyEvaluation(value)).toEqual(value);
   });
@@ -121,7 +121,7 @@ describe("policy setup transport", () => {
   });
   it("creates, gets, lists, archives and previews with setup credentials and canonical snake_case evidence", async () => {
     const retained = definition(), policy = response(retained), action = retained.actions[0].policy.action;
-    const evaluation = vectors.signature_cases[1].receipt.policy_eval;
+    const evaluation = decodeReceipt(vectors.signature_cases[1].receipt).policy_eval!;
     const fetch = vi.fn().mockResolvedValueOnce(fetchResponse(201, policy)).mockResolvedValueOnce(fetchResponse(200, policy))
       .mockResolvedValueOnce(fetchResponse(200, { items: [policy], has_more: false, next_cursor: null }))
       .mockResolvedValueOnce(fetchResponse(200, { provisional: true, definition_sha256: definitionDigest(retained), action, policy_eval: evaluation }))
@@ -159,7 +159,7 @@ describe("policy setup transport", () => {
   });
   it.each(["provisional", "action", "definition_sha256"])("rejects mismatched preview %s", async changed => {
     const value = definition(), action = value.actions[0].policy.action;
-    const payload: Record<string, unknown> = { provisional: true, action, definition_sha256: definitionDigest(value), policy_eval: vectors.signature_cases[1].receipt.policy_eval };
+    const payload: Record<string, unknown> = { provisional: true, action, definition_sha256: definitionDigest(value), policy_eval: decodeReceipt(vectors.signature_cases[1].receipt).policy_eval! };
     payload[changed] = changed === "provisional" ? false : "other";
     const client = new Allowly({ apiKey: "setup-key", baseUrl: BASE, fetch: mockFetch(200, payload) });
     await expect(client.policies.preview({ definition: value, action, context: {} })).rejects.toBeInstanceOf(AllowlyProtocolError);
@@ -167,7 +167,7 @@ describe("policy setup transport", () => {
   it("binds the Preview input commitment without recalculating OPA rules", async () => {
     const value = definition(), action = value.actions[0].policy.action;
     const client = new Allowly({ apiKey: "setup-key", baseUrl: BASE, fetch: mockFetch(200, {
-      provisional: true, action, definition_sha256: definitionDigest(value), policy_eval: vectors.signature_cases[1].receipt.policy_eval,
+      provisional: true, action, definition_sha256: definitionDigest(value), policy_eval: decodeReceipt(vectors.signature_cases[1].receipt).policy_eval!,
     }) });
     await expect(client.policies.preview({ definition: value, action, context: { risk: 1 } })).rejects.toThrow("input commitment");
   });
