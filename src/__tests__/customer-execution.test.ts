@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { createECDH, createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createECDH, createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +24,6 @@ vi.mock("node:tls", () => ({ connect: mocks.tlsConnect }));
 
 import {
   Allowly,
-  canonicalize,
   commitCustomerHttpRequest,
   completeCustomerExecutionEvidence,
   hashSealValue,

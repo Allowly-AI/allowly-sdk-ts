@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { signedReceipt as wrapReceipt, changedReceipt } from "./jws-fixture.js";
 import {
-  canonicalize,
   clearKeysDocCache,
   fetchKeysDoc,
   loadKeysFromJson,
