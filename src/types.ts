@@ -477,21 +477,23 @@ export interface PolicyReference {
 export type PolicyScalar = string | number | boolean | null;
 export interface BasicCondition {
   field: string;
-  op: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "exists";
+  op: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "exists" | "contains_any" | "contains_none" | "empty";
   value: PolicyScalar | PolicyScalar[];
 }
 export interface BasicRule {
   id: string;
   decision: Decision;
   target: string | null;
+  /** A rule matches when at least one condition matches (OR). */
   conditions: BasicCondition[];
 }
 export interface BasicPolicy {
   profile: "allowly.basic.v1";
   action: string;
-  default_decision: Decision;
-  default_target: string | null;
-  fields: Record<string, "string" | "integer" | "boolean" | "null">;
+  /** The action-level decision; conditional rules cannot weaken it. */
+  decision: Decision;
+  target: string | null;
+  fields: Record<string, "string" | "integer" | "boolean" | "null" | "list">;
   rules: BasicRule[];
 }
 export interface ActionGuards {

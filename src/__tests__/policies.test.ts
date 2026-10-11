@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { Allowly, AllowlyAPIError, AllowlyProtocolError, decodeReceipt } from "../index.js";
 import { definitionDigest, parsePolicyEvaluation, parsePolicyReference, validatePolicyDefinition } from "../policies.js";
-import type { PolicyDefinition } from "../types.js";
+import type { BasicCondition, PolicyDefinition } from "../types.js";
 
 const BASE = "https://api.example.com";
 const vectors: { signature_cases: Array<{ name: string; definition: PolicyDefinition; receipt: any }> } = JSON.parse(readFileSync(new URL("../../../allowly-receipt-format/vectors/policy/profile-v1.json", import.meta.url), "utf8"));
@@ -39,10 +39,17 @@ describe("canonical policy JSON", () => {
     ["boolean guard", d => d.actions[0].guards.max_per_day = true],
     ["unknown guard", d => d.actions[0].guards.confirmation = true],
     ["duplicate initiator", d => d.actions[0].guards.allowed_initiators = ["a", "a"]],
-    ["allow target", d => { d.actions[0].policy.default_decision = "allow"; d.actions[0].policy.default_target = "agent_owner"; }],
-    ["confirm team", d => { d.actions[0].policy.default_decision = "confirm"; d.actions[0].policy.default_target = "team:legal"; }],
-    ["escalate team", d => { d.actions[0].policy.default_decision = "escalate"; d.actions[0].policy.default_target = "team:legal"; }],
-    ["empty member", d => { d.actions[0].policy.default_decision = "escalate"; d.actions[0].policy.default_target = "member: "; }],
+    ["allow target", d => { d.actions[0].policy.decision = "allow"; d.actions[0].policy.target = "agent_owner"; }],
+    ["deny target", d => { d.actions[0].policy.decision = "deny"; d.actions[0].policy.target = "agent_owner"; }],
+    ["confirm team", d => { d.actions[0].policy.decision = "confirm"; d.actions[0].policy.target = "team:legal"; }],
+    ["confirm null", d => { d.actions[0].policy.decision = "confirm"; d.actions[0].policy.target = null; }],
+    ["escalate team", d => { d.actions[0].policy.decision = "escalate"; d.actions[0].policy.target = "team:legal"; }],
+    ["empty member", d => { d.actions[0].policy.decision = "escalate"; d.actions[0].policy.target = "member: "; }],
+    ["escalate null", d => { d.actions[0].policy.decision = "escalate"; d.actions[0].policy.target = null; }],
+    ["missing action decision", d => delete d.actions[0].policy.decision],
+    ["missing action target", d => delete d.actions[0].policy.target],
+    ["legacy default decision", d => d.actions[0].policy.default_decision = "allow"],
+    ["legacy default target", d => d.actions[0].policy.default_target = null],
     ["undeclared field", d => d.actions[0].policy.rules[0].conditions[0].field = "absent"],
     ["old neq", d => d.actions[0].policy.rules[0].conditions[0].op = "neq"],
     ["integer boolean", d => d.actions[0].policy.rules[0].conditions[0].value = true],
@@ -58,6 +65,61 @@ describe("canonical policy JSON", () => {
   it.each(invalid)("rejects %s without an old-shape translator", (_name, edit) => {
     const value = definition(); edit(value);
     expect(() => validatePolicyDefinition(value)).toThrow(AllowlyProtocolError);
+  });
+  it("rejects the legacy default fields instead of replacing action decision and target", () => {
+    const value: any = definition(), policy = value.actions[0].policy;
+    policy.default_decision = policy.decision; delete policy.decision;
+    policy.default_target = policy.target; delete policy.target;
+    expect(() => validatePolicyDefinition(value)).toThrow(AllowlyProtocolError);
+  });
+  it.each<["allow" | "deny" | "confirm" | "escalate", string | null]>([
+    ["allow", null], ["deny", null], ["confirm", "agent_owner"], ["escalate", "member:reviewer"],
+  ])("retains action %s and target %j when reading saved policies", async (decision, target) => {
+    const value = definition(); Object.assign(value.actions[0].policy, { decision, target });
+    const policy = response(value), fetch = vi.fn().mockResolvedValueOnce(fetchResponse(200, policy))
+      .mockResolvedValueOnce(fetchResponse(200, { items: [policy], has_more: false }));
+    const client = new Allowly({ apiKey: "setup-key", baseUrl: BASE, fetch });
+    expect((await client.policies.get("review")).definition).toEqual(value);
+    expect((await client.policies.list()).items[0].definition).toEqual(value);
+  });
+  it.each<[BasicCondition["op"], BasicCondition["value"]]>([
+    ["contains_any", ["sensitive", 1, true, null]], ["contains_none", ["external"]],
+    ["contains_any", Array.from({ length: 64 }, (_, index) => index)],
+    ["empty", true], ["empty", false], ["exists", true], ["exists", false],
+  ])("retains list %s with exact scalar operands %j", (op, compared) => {
+    const value = definition(), policy = value.actions[0].policy;
+    policy.fields.tags = "list";
+    policy.rules[0].conditions = [{ field: "tags", op, value: compared }];
+    const snapshot = validatePolicyDefinition(value);
+    expect(snapshot).toEqual(value); expect(snapshot).not.toBe(value);
+  });
+  it.each([
+    ["list", "contains_any", []], ["list", "contains_none", []],
+    ["list", "contains_any", Array.from({ length: 65 }, (_, index) => index)],
+    ["list", "contains_any", "sensitive"],
+    ["list", "contains_any", [["sensitive"]]], ["list", "contains_none", [{ tag: "sensitive" }]],
+    ["list", "contains_any", [1.5]], ["list", "contains_any", [2 ** 53]], ["list", "contains_none", [NaN]],
+    ["list", "empty", 1], ["list", "empty", "true"], ["list", "empty", null],
+    ["list", "eq", []], ["list", "ne", "sensitive"], ["list", "gt", 1],
+    ["list", "in", []], ["list", "not_in", []],
+    ["string", "contains_any", ["sensitive"]], ["integer", "contains_none", [1]],
+    ["boolean", "empty", true], ["null", "empty", false], ["array", "contains_any", ["sensitive"]],
+  ])("rejects list condition type/shape %j %j %j", (declared, op, compared) => {
+    const value: any = definition(), policy = value.actions[0].policy;
+    policy.fields.tags = declared;
+    policy.rules[0].conditions = [{ field: "tags", op, value: compared }];
+    expect(() => validatePolicyDefinition(value)).toThrow(AllowlyProtocolError);
+  });
+  it.each<["string" | "integer" | "boolean" | "null", BasicCondition["op"], BasicCondition["value"]]>([
+    ["string", "eq", "internal"], ["string", "ne", "external"],
+    ["integer", "gt", -1], ["integer", "gte", 0], ["integer", "lt", 1], ["integer", "lte", Number.MAX_SAFE_INTEGER],
+    ["boolean", "eq", true], ["null", "eq", null], ["string", "in", ["internal"]], ["integer", "not_in", [0]],
+    ["boolean", "in", []], ["null", "not_in", []],
+  ])("keeps scalar %s %s %j supported", (declared, op, compared) => {
+    const value = definition(), policy = value.actions[0].policy;
+    policy.fields.scalar = declared;
+    policy.rules[0].conditions = [{ field: "scalar", op, value: compared }];
+    expect(validatePolicyDefinition(value)).toEqual(value);
   });
   it.each([true, false, 0, -1, 1.5, 2 ** 53, "1", null])("rejects a non-positive safe version %j", version => {
     expect(() => parsePolicyReference({ policy_id: "review", policy_version: version, definition_sha256: "a".repeat(64) })).toThrow(AllowlyProtocolError);
@@ -79,7 +141,7 @@ describe("canonical policy JSON", () => {
     ["failure status", e => e.result.status = "error"], ["unknown result", e => e.result.extra = true],
     ["missing target", e => delete e.result.target], ["confirm team", e => { e.result.decision = "confirm"; e.result.target = "team:legal"; }],
     ["allow target", e => { e.result.decision = "allow"; e.result.target = "agent_owner"; }],
-    ["default fields", e => { e.result.matched_rule_id = null; e.result.evaluated_fields = { risk: 1 }; }],
+    ["action-level fields", e => { e.result.matched_rule_id = null; e.result.evaluated_fields = { risk: 1 }; }],
     ["float fields", e => e.result.evaluated_fields = { risk: 1.5 }],
   ];
   it.each(badEvidence)("rejects malformed provisional evidence: %s", (_name, edit) => {
@@ -153,9 +215,14 @@ describe("policy setup transport", () => {
   });
   it("binds create to the sent snapshot even if the caller changes its object while awaiting transport", async () => {
     const value = definition(), original = structuredClone(value), policy = response(original);
-    const fetch = vi.fn().mockImplementation(async () => { value.actions[0].policy.default_decision = "allow"; return fetchResponse(201, policy); });
+    const fetch = vi.fn().mockImplementation(async () => {
+      const changed = value.actions[0].policy;
+      Object.assign(changed, { decision: changed.decision === "allow" ? "deny" : "allow", target: null });
+      return fetchResponse(201, policy);
+    });
     const client = new Allowly({ apiKey: "setup-key", baseUrl: BASE, fetch });
     expect((await client.policies.create({ policyId: "review", definition: value })).definition).toEqual(original);
+    expect(value).not.toEqual(original);
   });
   it.each(["provisional", "action", "definition_sha256"])("rejects mismatched preview %s", async changed => {
     const value = definition(), action = value.actions[0].policy.action;

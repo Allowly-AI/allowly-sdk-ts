@@ -85,19 +85,19 @@ export function validatePolicyDefinition(value: unknown): PolicyDefinition {
   const names = new Set<string>(), operations = new Set<string>();
   for (const item of raw.actions) {
     const entry = exact(item, ["policy", "guards", "executable_operations"], "policy action");
-    const policy = exact(entry.policy, ["profile", "action", "default_decision", "default_target", "fields", "rules"], "basic policy");
+    const policy = exact(entry.policy, ["profile", "action", "decision", "target", "fields", "rules"], "basic policy");
     const name = text(policy.action, "policy.action", 64);
     if (names.has(name) || ["allow", "deny", "confirm", "escalate"].includes(name)) {
       throw new AllowlyProtocolError("policy actions must be unique executable names");
     }
     names.add(name);
     if (policy.profile !== "allowly.basic.v1") throw new AllowlyProtocolError("basic policy profile is unsupported");
-    target(policy.default_decision, policy.default_target);
+    target(policy.decision, policy.target);
     const fields = record(policy.fields, "policy.fields");
     if (Object.keys(fields).length > 64) throw new AllowlyProtocolError("policy.fields must be bounded");
     for (const [key, declared] of Object.entries(fields)) {
       text(key, "field");
-      if (typeof declared !== "string" || !["string", "integer", "boolean", "null"].includes(declared)) {
+      if (typeof declared !== "string" || !["string", "integer", "boolean", "null", "list"].includes(declared)) {
         throw new AllowlyProtocolError("policy field type is unsupported");
       }
     }
@@ -116,13 +116,25 @@ export function validatePolicyDefinition(value: unknown): PolicyDefinition {
         const condition = exact(item, ["field", "op", "value"], "condition");
         const field = text(condition.field, "condition.field"), declared = fields[field];
         const op = condition.op, compared = condition.value;
-        if (!Object.prototype.hasOwnProperty.call(fields, field) || typeof op !== "string" || !["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "exists"].includes(op)) {
+        if (!Object.prototype.hasOwnProperty.call(fields, field) || typeof op !== "string" || !["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "exists", "contains_any", "contains_none", "empty"].includes(op)) {
           throw new AllowlyProtocolError("condition requires a declared field and supported operator");
         }
         if (op === "exists") {
           if (typeof compared !== "boolean") throw new AllowlyProtocolError("exists requires a boolean value");
           continue;
         }
+        if (op === "empty") {
+          if (declared !== "list" || typeof compared !== "boolean") throw new AllowlyProtocolError("empty requires a list field and a boolean value");
+          continue;
+        }
+        if (op === "contains_any" || op === "contains_none") {
+          if (declared !== "list" || !Array.isArray(compared) || compared.length < 1 || compared.length > 64
+              || compared.some(value => value !== null && !["string", "number", "boolean"].includes(typeof value))) {
+            throw new AllowlyProtocolError("list overlap requires a list field and 1 to 64 scalar values");
+          }
+          continue;
+        }
+        if (declared === "list") throw new AllowlyProtocolError("list fields require list comparisons or exists");
         const membership = op === "in" || op === "not_in";
         if (membership !== Array.isArray(compared)) throw new AllowlyProtocolError("only membership comparisons use arrays");
         const values = membership ? compared as unknown[] : [compared];
@@ -172,7 +184,7 @@ export function parsePolicyEvaluation(value: unknown): PolicyEvalInfo {
   if (result.matched_rule_id !== null) text(result.matched_rule_id, "matched_rule_id");
   const fields = record(result.evaluated_fields, "evaluated_fields");
   Object.keys(fields).forEach(key => text(key, "evaluated field"));
-  if (result.matched_rule_id === null && Object.keys(fields).length) throw new AllowlyProtocolError("default result must have empty evaluated_fields");
+  if (result.matched_rule_id === null && Object.keys(fields).length) throw new AllowlyProtocolError("action-level result must have empty evaluated_fields");
   return raw as unknown as PolicyEvalInfo;
 }
 function parsePolicy(value: unknown): PolicyResponse {

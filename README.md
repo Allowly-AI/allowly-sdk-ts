@@ -366,7 +366,7 @@ const definition: PolicyDefinition = {
   actions: [{
     policy: {
       profile: "allowly.basic.v1", action: "web.search",
-      default_decision: "allow", default_target: null,
+      decision: "allow", target: null,
       fields: { risk: "integer" },
       rules: [{ id: "review-high-risk", decision: "confirm", target: "agent_owner",
         conditions: [{ field: "risk", op: "gte", value: 2 }] }],
@@ -390,10 +390,18 @@ const page = await setup.policies.list({ limit: 20 });
 Definitions, `policyRef` members, and `policyEval` evidence keep canonical
 snake_case JSON fields. The SDK does not rename signed evidence. Rules are
 ordered; comparison operators are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`,
-`not_in`, and `exists`. Values must match declared field types and use safe
-integers. Allow/deny targets are null, confirm targets are `agent_owner`, and
-escalation targets are actual `member:<account_user_id>` values. Publishing
-checks agent ownership, setup provenance, current membership, and executable
+`not_in`, `exists`, `contains_any`, `contains_none`, and `empty`. A rule matches
+if any condition matches (OR). Valid comparisons use fixed priority: deny,
+escalate, confirm, then allow. Rules cannot weaken the action decision.
+Action deny always wins. Otherwise, a matching rule wins a tie with the action;
+the first matching rule wins ties between rules. If no rule matches, the action
+decision stays unchanged. List fields support
+overlap with 1–64 scalar values, or `empty` with a strict boolean value.
+List items may mix strings, integers, booleans, and null, but not nested arrays
+or objects. Values must match declared field
+types and use safe integers. Allow/deny targets are null, confirm targets are
+`agent_owner`, and escalation targets are actual `member:<account_user_id>`
+values. Publishing checks agent ownership, setup provenance, current membership, and executable
 catalog bindings on the server. Guessed members or team labels are not targets.
 
 Preview calculates only provisional OPA rules, not grants, live guards, quotas,

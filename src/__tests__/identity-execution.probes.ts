@@ -55,7 +55,7 @@ const greenhouseCandidateListCommitment = commitCustomerHttpRequest(
 
 const executableAction = {
   policy: { profile: "allowly.basic.v1", action: "greenhouse.candidates.list",
-    default_decision: "allow", default_target: null, fields: {}, rules: [] },
+    decision: "allow", target: null, fields: {}, rules: [] },
   guards: {},
   executable_operations: [{
     enabled_executable_id: "exe_123",

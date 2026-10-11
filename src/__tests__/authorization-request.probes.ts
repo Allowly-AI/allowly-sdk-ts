@@ -1,4 +1,4 @@
-import type { AuthorizationCreateRequest, PolicyDefinition } from "../types.js";
+import type { AuthorizationCreateRequest, BasicPolicy, PolicyDefinition } from "../types.js";
 import { Allowly } from "../client.js";
 
 // Exact logical policy edition and optional names-only action scope.
@@ -27,11 +27,21 @@ const definition: PolicyDefinition = {
   profile: "allowly.policy.v1", agent_id: "a1", default_expiry_days: 7,
   actions: [{
     policy: { profile: "allowly.basic.v1", action: "email.send",
-      default_decision: "confirm", default_target: "agent_owner", fields: {}, rules: [] },
+      decision: "confirm", target: "agent_owner", fields: { tags: "list" },
+      rules: [{ id: "sensitive-tags", decision: "escalate", target: "member:reviewer",
+        conditions: [
+          { field: "tags", op: "contains_any", value: ["sensitive", 1, true, null] },
+          { field: "tags", op: "contains_none", value: ["internal"] },
+          { field: "tags", op: "empty", value: false },
+        ] }] },
     guards: {}, executable_operations: [],
   }],
 };
 const client = new Allowly({ apiKey: "setup-key" });
+({ ...definition.actions[0].policy,
+  // @ts-expect-error old fallback fields are not policy authority
+  default_decision: "allow", default_target: null,
+}) satisfies BasicPolicy;
 void client.policies.create({ policyId: "p1", definition });
 void client.policies.preview({ definition, action: "email.send", context: {} });
 void client.policies.publish({ policyId: "p1", definition, idempotencyKey: "publish-p1" });
