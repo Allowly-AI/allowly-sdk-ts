@@ -5,7 +5,7 @@ import { definitionDigest, parsePolicyEvaluation, parsePolicyReference, validate
 import type { BasicCondition, PolicyDefinition } from "../types.js";
 
 const BASE = "https://api.example.com";
-const vectors: { signature_cases: Array<{ name: string; definition: PolicyDefinition; receipt: any }> } = JSON.parse(readFileSync(new URL("../../../allowly-receipt-format/vectors/policy/profile-v1.json", import.meta.url), "utf8"));
+const vectors: { signature_cases: Array<{ name: string; definition: PolicyDefinition; receipt: any }> } = JSON.parse(readFileSync(new URL(import.meta.resolve("@allowly/verifier/vectors/policy/profile-v1.json")), "utf8"));
 function definition(): PolicyDefinition { return structuredClone(vectors.signature_cases[1].definition); }
 function response(value = definition(), policyId = "review", version = 1) {
   return { policy_ref: { policy_id: policyId, policy_version: version, definition_sha256: definitionDigest(value) },
