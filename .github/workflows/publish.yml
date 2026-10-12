@@ -27,10 +27,20 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-      - name: Require public verifier 4.3.1
+      - name: Require public verifier release
         run: |
-          published_version="$(npm view @allowly/verifier@4.3.1 version --registry=https://registry.npmjs.org)"
-          test "$published_version" = "4.3.1"
+          verifier_version="$(node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const spec = JSON.parse(readFileSync("package.json", "utf8")).dependencies?.["@allowly/verifier"];
+          const version = typeof spec === "string" && /^\^?(\d+\.\d+\.\d+)$/.exec(spec)?.[1];
+          if (!version) throw new Error("Release dependencies must use an exact or caret stable verifier version, not sibling-source staging");
+          console.log(version);
+          NODE
+          )"
+          published_version="$(npm view "@allowly/verifier@$verifier_version" version --registry=https://registry.npmjs.org)"
+          test "$published_version" = "$verifier_version"
+          echo "ALLOWLY_VERIFIER_RELEASE=$verifier_version" >> "$GITHUB_ENV"
       - name: Require registry-backed verifier lock
         run: |
           node --input-type=module <<'NODE'
@@ -40,22 +50,23 @@ jobs:
           const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
           const root = lock.packages?.[""];
           const verifier = lock.packages?.["node_modules/@allowly/verifier"];
+          const version = process.env.ALLOWLY_VERIFIER_RELEASE;
           const fail = (message) => {
             console.error(message);
             process.exit(1);
           };
 
-          if (packageJson.dependencies?.["@allowly/verifier"] !== "^4.3.1") {
-            fail("package.json must require @allowly/verifier ^4.3.1");
+          if (!version || packageJson.dependencies?.["@allowly/verifier"]?.replace(/^\^/, "") !== version) {
+            fail("package.json must require the public verifier release checked above");
           }
-          if (root?.dependencies?.["@allowly/verifier"] !== "^4.3.1") {
+          if (root?.dependencies?.["@allowly/verifier"] !== packageJson.dependencies["@allowly/verifier"]) {
             fail("package-lock.json root metadata is not synchronized with package.json");
           }
           for (const [location, spec] of [
             ["package.json devDependencies", packageJson.devDependencies?.["@allowly/verifier"]],
             ["package-lock.json root devDependencies", root?.devDependencies?.["@allowly/verifier"]],
           ]) {
-            if (typeof spec === "string" && spec.startsWith("file:")) {
+            if (typeof spec === "string" && /^(file:|link:|workspace:)/.test(spec)) {
               fail(`${location} still uses the local verifier source`);
             }
           }
@@ -63,8 +74,8 @@ jobs:
             key.includes("allowly-receipt-format/verifiers/typescript"))) {
             fail("package-lock.json still contains the local verifier package");
           }
-          if (!verifier || verifier.link === true || verifier.version !== "4.3.1") {
-            fail("package-lock.json must contain a non-link @allowly/verifier 4.3.1 entry");
+          if (!verifier || verifier.link === true || verifier.version !== version) {
+            fail(`package-lock.json must contain a non-link @allowly/verifier ${version} entry`);
           }
           if (typeof verifier.resolved !== "string") {
             fail("the verifier lock entry has no registry tarball URL");
@@ -73,7 +84,7 @@ jobs:
           if (
             resolved.protocol !== "https:" ||
             resolved.hostname !== "registry.npmjs.org" ||
-            !resolved.pathname.endsWith("/verifier-4.3.1.tgz")
+            resolved.pathname !== `/@allowly/verifier/-/verifier-${version}.tgz`
           ) {
             fail("the verifier lock entry is not backed by the public npm registry");
           }

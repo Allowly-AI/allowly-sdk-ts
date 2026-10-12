@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0
+
+- Use verifier 5.0.0 and receipt wire 5 only, preserving the original signed
+  JWS envelope for verification. This breaking rebuild removes wire-4 parsing.
+- Create grants from exact immutable policy editions. Support action choices,
+  decision precedence, OR conditions and list operators in the typed policy API.
+- Continue native Execute reviews using the original operation and saved request;
+  status and verified resolution webhooks wake saved jobs but do not authorize
+  or dispatch an action. Pending or rejected reviews never send.
+- Use the published verifier 5.0.0 with a registry-backed lock. SDK 0.7.0
+  remains the earlier wire-4 release; this breaking rebuild uses the next minor.
+  The publish workflow checks the public verifier release before publication.
+
 ## 0.6.1
 
 - Accept the runtime's `not_approved` confirmation response while keeping

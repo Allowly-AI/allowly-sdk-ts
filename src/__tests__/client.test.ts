@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { signedReceipt as wrapReceipt, changedReceipt } from "./jws-fixture.js";
 import {
   Allowly,
   AllowlyAPIError,
@@ -18,11 +19,10 @@ const PENDING_RECEIPT = {
   url: `${BASE}/v1/receipts/rcp_abc`,
 };
 
-const AUTHORIZATION_RULE_FIELDS = {
-  requires_confirm_for: [] as string[],
-  requires_escalation_for: [] as string[],
-  requires_deny_for: [] as string[],
-  escalation_targets: {} as Record<string, string>,
+const AUTHORIZATION_POLICY_FIELDS = {
+  policy_ref: { policy_id: "p1", policy_version: 1, definition_sha256: "a".repeat(64) },
+  actions: ["email.read"],
+  authorization_provenance: { mode: "none" },
 };
 
 function makeFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -52,7 +52,7 @@ function checkBody(action: string, result: Record<string, unknown>, extra: Recor
     user_id: "u1",
     agent_id: "a1",
     authorization_expires_at: "2026-12-31T00:00:00Z",
-    engine_version: "2026-04-19.1",
+    engine_version: "sha256:" + "a".repeat(64),
     ...extra,
     results: { [action]: result },
   };
@@ -184,12 +184,10 @@ describe("Allowly.check", () => {
       confirm_expires_at: "2026-04-20T00:15:00Z",
       confirm_prompt_hint: "hiring.publish_feedback",
       policy_eval: {
-        matched_condition: {
-          field: "checks_failed",
-          op: "in",
-          value: ["pii_detected", "tone_flag"],
-        },
-        field_value: "pii_detected",
+        input_sha256: "c".repeat(64),
+        result: { profile: "allowly.basic.v1", status: "ok", decision: "confirm",
+          target: "agent_owner", matched_rule_id: "checks-failed",
+          evaluated_fields: { checks_failed: "pii_detected" } },
       },
       receipt: PENDING_RECEIPT,
     }, { authorization_id: "auth_policy" }));
@@ -200,12 +198,10 @@ describe("Allowly.check", () => {
 
     expect(action.decision).toBe("confirm");
     expect(action.policyEval).toEqual({
-      matchedCondition: {
-        field: "checks_failed",
-        op: "in",
-        value: ["pii_detected", "tone_flag"],
-      },
-      fieldValue: "pii_detected",
+      input_sha256: "c".repeat(64),
+      result: { profile: "allowly.basic.v1", status: "ok", decision: "confirm",
+        target: "agent_owner", matched_rule_id: "checks-failed",
+        evaluated_fields: { checks_failed: "pii_detected" } },
     });
   });
 
@@ -246,7 +242,7 @@ describe("Allowly.check", () => {
     "preserves registration error codes in the common API error parser (%s)", async (status, code) => {
       const fetch = makeFetch(Number(status), { error: { code, message: "Registration failed" } });
       const client = new Allowly({ ...CLIENT_OPTS, fetch });
-      await expect(client.authorizations.create({ userId: "u1", policyId: "p1" })).rejects.toMatchObject({ status, code });
+      await expect(client.authorizations.create({ userId: "u1", policyId: "p1", policyVersion: 1 })).rejects.toMatchObject({ status, code });
     },
   );
 
@@ -771,333 +767,114 @@ describe("Allowly.settleBudget", () => {
 });
 
 describe("Allowly.authorizations.create", () => {
+  const request = { userId: "u1", policyId: "p1", policyVersion: 1 };
+  function response(override: Record<string, unknown> = {}) {
+    return { authorization_id: "auth_new", created_at: "2026-04-20T00:00:00Z",
+      expires_at: "2026-12-31T00:00:00Z", ...AUTHORIZATION_POLICY_FIELDS,
+      receipt: PENDING_RECEIPT, ...override };
+  }
+
   it("preserves string error bodies", async () => {
-    const client = new Allowly({
-      ...CLIENT_OPTS,
-      fetch: makeFetch(400, { error: "upstream connect timeout" }),
-    });
-
-    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" })).rejects.toMatchObject({
-      code: "error",
-      message: "upstream connect timeout",
-    });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(400, { error: "upstream connect timeout" }) });
+    await expect(client.authorizations.create(request)).rejects.toMatchObject({ code: "error", message: "upstream connect timeout" });
   });
-
   it("exports its transport error", async () => {
-    const client = new Allowly({
-      ...CLIENT_OPTS,
-      fetch: vi.fn().mockRejectedValue(new TypeError("offline")),
-    });
-
-    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
-      .rejects.toBeInstanceOf(AllowlyTransportError);
+    const client = new Allowly({ ...CLIENT_OPTS, fetch: vi.fn().mockRejectedValue(new TypeError("offline")) });
+    await expect(client.authorizations.create(request)).rejects.toBeInstanceOf(AllowlyTransportError);
   });
-
   it("applies the default request timeout path", async () => {
     const fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal as AbortSignal;
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     }));
-    const client = new Allowly({ ...CLIENT_OPTS, fetch, requestTimeoutMs: 1 });
-    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch, requestTimeoutMs: 1 }).authorizations.create(request))
       .rejects.toMatchObject({ name: "TimeoutError" });
   });
-
   it("requires exact HTTP 201", async () => {
-    const fetch = makeFetch(200, {
-      authorization_id: "auth_new",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(200, response()) }).authorizations.create(request))
       .rejects.toThrow("unexpected successful HTTP status");
   });
-
-  it("omits inline decision overrides from policy-based requests", async () => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_policy",
-      policy_id: "p1",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      receipt: PENDING_RECEIPT,
+  it("sends only the exact policy edition, names and customer metadata", async () => {
+    const fetch = makeFetch(201, response());
+    const result = await new Allowly({ ...CLIENT_OPTS, fetch }).authorizations.create({
+      ...request, actions: ["email.read"], metadata: { source: "import" }, idempotencyKey: "create-1",
     });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await client.authorizations.create({ userId: "u1", policyId: "p1" });
-
-    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body).not.toHaveProperty("requires_confirm_for");
-    expect(body).not.toHaveProperty("requires_escalation_for");
-    expect(body).not.toHaveProperty("requires_deny_for");
-    expect(body).not.toHaveProperty("escalation_targets");
+    const [, init] = fetch.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      user_id: "u1", policy_id: "p1", policy_version: 1, actions: ["email.read"], metadata: { source: "import" },
+    });
+    expect(init.headers).toMatchObject({ "Idempotency-Key": "create-1" });
+    expect(result.policyRef).toEqual(AUTHORIZATION_POLICY_FIELDS.policy_ref);
+    expect(result.actions).toEqual(["email.read"]);
+    expect(result.authorizationProvenance).toEqual({ mode: "none" });
+    expect(result.receipt.receiptId).toBe("rcp_abc");
   });
-
-  it.each([
-    ["requiresConfirmFor", []],
-    ["requiresEscalationFor", []],
-    ["requiresDenyFor", []],
-    ["escalationTargets", {}],
-  ])("rejects policy create with runtime decision override %s", async (field, value) => {
+  it("omits optional action scope and expiry instead of inventing them", async () => {
+    const fetch = makeFetch(201, response());
+    await new Allowly({ ...CLIENT_OPTS, fetch }).authorizations.create(request);
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+      user_id: "u1", policy_id: "p1", policy_version: 1, metadata: {},
+    });
+  });
+  it.each([0, 50_000_000])("preserves an explicit safe budget %s and expiry", async budgetLimitMicros => {
+    const fetch = makeFetch(201, response({ budget_limit_micros: budgetLimitMicros, budget_spent_micros: 0 }));
+    const result = await new Allowly({ ...CLIENT_OPTS, fetch }).authorizations.create({
+      ...request, budgetLimitMicros, expiresAt: new Date("2027-01-01T00:00:00Z"),
+    });
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ budget_limit_micros: budgetLimitMicros, expires_at: "2027-01-01T00:00:00.000Z" });
+    expect(result.budgetLimitMicros).toBe(budgetLimitMicros);
+    expect(result.budgetSpentMicros).toBe(0);
+  });
+  it.each([true, false, 0, -1, 1.5, 2 ** 53, "1", null])("rejects a non-safe policy version %j before HTTP", async policyVersion => {
     const fetch = makeFetch(201, {});
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await expect(client.authorizations.create({
-      userId: "u1",
-      policyId: "p1",
-      [field]: value,
-    } as any)).rejects.toThrow(field);
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch }).authorizations.create({ ...request, policyVersion } as any)).rejects.toThrow("policyVersion");
     expect(fetch).not.toHaveBeenCalled();
   });
-
-  it.each([
-    ["requires_confirm_for", undefined],
-    ["requires_confirm_for", ["email.send", 1]],
-    ["requires_escalation_for", undefined],
-    ["requires_escalation_for", ["candidate.delete", null]],
-    ["requires_deny_for", undefined],
-    ["requires_deny_for", [false]],
-    ["escalation_targets", undefined],
-    ["escalation_targets", { "candidate.delete": 7 }],
-  ])("strictly requires and validates authorization response field %s (%j)", async (field, value) => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_new",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      [field]: value,
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
-      .rejects.toBeInstanceOf(AllowlyProtocolError);
+  it.each([[], ["email.read", "email.read"], [1], [{ name: "email.read" }], ["x".repeat(65)]].map(actions => ({ actions })))("rejects a non-name action scope $actions", async ({ actions }) => {
+    const fetch = makeFetch(201, {});
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch }).authorizations.create({ ...request, actions } as any)).rejects.toThrow("actions");
+    expect(fetch).not.toHaveBeenCalled();
   });
-
-  it.each(["receipt_id", "url"])("requires pending receipt field %s", async (field) => {
+  it.each(["agentId", "requiresConfirmFor", "requiresEscalationFor", "requiresDenyFor", "escalationTargets"])("rejects removed inline/control field %s", async field => {
+    const fetch = makeFetch(201, {});
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch }).authorizations.create({ ...request, [field]: [] } as any)).rejects.toThrow("unknown fields");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each(["policy_ref", "actions", "authorization_provenance", "receipt"])("requires new response field %s", async field => {
+    const value = response();
+    delete value[field as keyof typeof value];
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(201, value) }).authorizations.create(request)).rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+  it.each([
+    ["policy_ref", null], ["actions", [1]], ["actions", []], ["authorization_provenance", null],
+    ["budget_limit_micros", true], ["budget_spent_micros", -1],
+  ])("strictly validates new response field %s (%j)", async (field, value) => {
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(201, response({ [field]: value })) }).authorizations.create(request)).rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+  it.each([
+    { policy_ref: { ...AUTHORIZATION_POLICY_FIELDS.policy_ref, policy_id: "other" } },
+    { policy_ref: { ...AUTHORIZATION_POLICY_FIELDS.policy_ref, policy_version: 2 } },
+    { actions: ["email.send"] }, { requires_confirm_for: [] },
+  ])("rejects a mismatched edition/scope or an old hybrid response %j", async override => {
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(201, response(override)) }).authorizations.create({ ...request, actions: ["email.read"] })).rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+  it.each(["receipt_id", "url"])("requires pending receipt field %s", async field => {
     const receipt = { ...PENDING_RECEIPT } as Record<string, unknown>;
     delete receipt[field];
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_new",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      receipt,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await expect(client.authorizations.create({ userId: "u1", policyId: "p1" }))
-      .rejects.toThrow(field);
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch: makeFetch(201, response({ receipt })) }).authorizations.create(request)).rejects.toThrow(field);
   });
-
-  it("returns AuthorizationCreateResponse with receipt envelope", async () => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_new",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      requires_confirm_for: ["email.send"],
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.authorizations.create({
-      userId: "u1", agentId: "a1",
-      actions: [{ name: "email.read" }, { name: "email.send" }],
-      requiresConfirmFor: ["email.send"],
-      expiresAt: "2026-12-31T00:00:00Z",
-    });
-    expect(res.authorizationId).toBe("auth_new");
-    expect(res.receipt.status).toBe("pending");
-    expect(res.receipt.receiptId).toBe("rcp_abc");
-    expect(res.requiresConfirmFor).toEqual(["email.send"]);
+  it("exposes billing warnings and supersession linkage", async () => {
+    const fetch = makeFetch(201, response({ replaced_authorization_id: "auth_old", revocation_receipt: PENDING_RECEIPT }), { "X-Allowly-Billing-Warning": "payment_past_due" });
+    const result = await new Allowly({ ...CLIENT_OPTS, fetch }).authorizations.create({ ...request, replaces: "auth_old" });
+    expect(JSON.parse(fetch.mock.calls[0][1].body).replaces).toBe("auth_old");
+    expect(result.replacedAuthorizationId).toBe("auth_old");
+    expect(result.revocationReceipt?.status).toBe("pending");
+    expect(result.billingWarning).toBe("payment_past_due");
   });
-
-  it("serializes exact executable grants on inline actions without widening empty grants", async () => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_new",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await client.authorizations.create({
-      userId: "u1",
-      agentId: "a1",
-      actions: [
-        {
-          name: "greenhouse.candidates.update",
-          executableOperations: [{
-            enabledExecutableId: "exe_1",
-            providerId: "greenhouse",
-            operationId: "greenhouse.candidates.update",
-            catalogRevision: "2026-09-27.1",
-            definitionFingerprint: "sha256:" + "1".repeat(64),
-            minimumEvidenceMode: "receipt",
-          }],
-        },
-        { name: "email.read", executableOperations: [] },
-      ],
-      expiresAt: "2026-12-31T00:00:00Z",
-    });
-
-    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.actions[0].executable_operations).toEqual([{
-      enabled_executable_id: "exe_1",
-      provider_id: "greenhouse",
-      operation_id: "greenhouse.candidates.update",
-      catalog_revision: "2026-09-27.1",
-      definition_fingerprint: "sha256:" + "1".repeat(64),
-      minimum_evidence_mode: "receipt",
-    }]);
-    expect(body.actions[1]).not.toHaveProperty("executable_operations");
-  });
-
-  it("exposes the billing-warning header on create", async () => {
-    const fetch = makeFetch(
-      201,
-      {
-        authorization_id: "auth_new",
-        created_at: "2026-04-20T00:00:00Z",
-        expires_at: "2026-12-31T00:00:00Z",
-        ...AUTHORIZATION_RULE_FIELDS,
-        receipt: PENDING_RECEIPT,
-      },
-      { "X-Allowly-Billing-Warning": "payment_past_due" },
-    );
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.authorizations.create({
-      userId: "u1", agentId: "a1",
-      actions: ["email.read"],
-      expiresAt: "2026-12-31T00:00:00Z",
-    });
-    expect(res.billingWarning).toBe("payment_past_due");
-  });
-
-  it("sends and parses budget fields", async () => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_budget",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      budget_limit_micros: 50_000_000,
-      budget_spent_micros: 0,
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.authorizations.create({
-      userId: "u1",
-      agentId: "a1",
-      actions: ["llm.enrich"],
-      expiresAt: "2026-12-31T00:00:00Z",
-      budgetLimitMicros: 50_000_000,
-    });
-
-    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.budget_limit_micros).toBe(50_000_000);
-    expect(res.authorizationId).toBe("auth_budget");
-    expect(res.budgetLimitMicros).toBe(50_000_000);
-    expect(res.budgetSpentMicros).toBe(0);
-  });
-
-  it("sends and parses escalation fields", async () => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_esc",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      requires_escalation_for: ["candidate.delete"],
-      requires_deny_for: ["email.send"],
-      escalation_targets: { "candidate.delete": "compliance" },
-      replaced_authorization_id: "auth_old",
-      revocation_receipt: PENDING_RECEIPT,
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    const res = await client.authorizations.create({
-      userId: "u1",
-      agentId: "a1",
-      actions: ["candidate.delete", "email.send"],
-      requiresEscalationFor: ["candidate.delete"],
-      requiresDenyFor: ["email.send"],
-      escalationTargets: { "candidate.delete": "compliance" },
-      expiresAt: "2026-12-31T00:00:00Z",
-      idempotencyKey: "create-1",
-    });
-
-    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.requires_escalation_for).toEqual(["candidate.delete"]);
-    expect(body.requires_deny_for).toEqual(["email.send"]);
-    expect(body.escalation_targets).toEqual({ "candidate.delete": "compliance" });
-    expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "create-1" });
-    expect(res.requiresEscalationFor).toEqual(["candidate.delete"]);
-    expect(res.requiresDenyFor).toEqual(["email.send"]);
-    expect(res.escalationTargets).toEqual({ "candidate.delete": "compliance" });
-    expect(res.replacedAuthorizationId).toBe("auth_old");
-    expect(res.revocationReceipt?.status).toBe("pending");
-  });
-
-  it("sends supersession lineage on create", async () => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_new",
-      created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z",
-      ...AUTHORIZATION_RULE_FIELDS,
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-
-    await client.authorizations.create({
-      userId: "u1",
-      agentId: "a1",
-      actions: ["email.read"],
-      expiresAt: "2026-12-31T00:00:00Z",
-      replaces: "auth_prev",
-    });
-
-    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.replaces).toBe("auth_prev");
-  });
-
-  it("does not send session_id", async () => {
-    const fetch = makeFetch(201, {
-      authorization_id: "auth_new", created_at: "2026-04-20T00:00:00Z",
-      expires_at: "2026-12-31T00:00:00Z", ...AUTHORIZATION_RULE_FIELDS,
-      receipt: PENDING_RECEIPT,
-    });
-    const client = new Allowly({ ...CLIENT_OPTS, fetch });
-    await client.authorizations.create({
-      userId: "u1", agentId: "a1", actions: ["email.read"], expiresAt: "2026-12-31T00:00:00Z",
-    });
-    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body).not.toHaveProperty("session_id");
-  });
-
-  it("does not use fallback behavior", async () => {
+  it("does not use Check fallback behavior for grant creation", async () => {
     const fetch = makeFetch(503, { error: { code: "unavailable", message: "try again" } });
-    const client = new Allowly({
-      ...CLIENT_OPTS,
-      fetch,
-      fallbackByAction: { "email.read": "fail_open" },
-    });
-
-    await expect(client.authorizations.create({
-      userId: "u1",
-      agentId: "a1",
-      actions: ["email.read"],
-      expiresAt: "2026-12-31T00:00:00Z",
-    })).rejects.toMatchObject({ status: 503, code: "unavailable" });
+    await expect(new Allowly({ ...CLIENT_OPTS, fetch, fallbackByAction: { "email.read": "fail_open" } }).authorizations.create(request)).rejects.toMatchObject({ status: 503, code: "unavailable" });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1223,7 +1000,7 @@ describe("Allowly.confirmations", () => {
     expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": "confirm-1" });
   });
 
-  it.each(["not_approved", "denied_by_user"])("handles %s", async (decision) => {
+  it.each(["not_approved"])("handles %s", async (decision) => {
     const fetch = makeFetch(200, {
       decision,
       authorization_id: null,
@@ -1258,6 +1035,7 @@ describe("Allowly.confirmations", () => {
   it.each([
     { decision: "approved", authorization_id: "auth_xyz" },
     { decision: "unknown", authorization_id: null, expires_at: null },
+    { decision: "denied_by_user", authorization_id: null, expires_at: null, receipt: null },
     { decision: "not_approved", authorization_id: null },
     { decision: "not_approved", authorization_id: "auth_xyz", expires_at: null },
     { decision: "denied_by_user", authorization_id: null },
@@ -1398,8 +1176,8 @@ describe("check confirmation monitor identity", () => {
 
 describe("Allowly.seal", () => {
   const recordSha256 = "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777";
-  const signedReceipt = {
-    schema_version: "4",
+  const signedReceipt = wrapReceipt({
+    schema_version: "5",
     receipt_id: "rcp_abc",
     workspace_id: "ws_test",
     issued_at: "2026-04-21T14:32:17.482Z",
@@ -1414,11 +1192,12 @@ describe("Allowly.seal", () => {
       record_sha256: recordSha256,
     },
     authorization_id: "auth_seal",
-    engine_version: "2026-04-17.1",
+    engine_version: "sha256:" + "a".repeat(64),
+    policy_ref: { policy_id: "pol_fixture", policy_version: 1, definition_sha256: "b".repeat(64) },
     alg: "Ed25519",
     key_id: "test-key/v1",
     signature: "signature",
-  };
+  });
 
   it("hashes raw JSON locally, posts only the digest, and polls until signed", async () => {
     const fetch = vi.fn()
@@ -1532,7 +1311,7 @@ describe("Allowly.seal", () => {
       reason: "authorization_granted_action_active",
       receipt: {
         status: "signed",
-        receipt: { ...signedReceipt, action: "record.publish" },
+        receipt: changedReceipt(signedReceipt, { action: "record.publish" }),
       },
     });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
@@ -1554,7 +1333,7 @@ describe("Allowly.seal", () => {
       }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         status: "signed",
-        receipt: { ...signedReceipt, receipt_id: "rcp_other" },
+        receipt: changedReceipt(signedReceipt, { receipt_id: "rcp_other" }),
       }), { status: 200 }));
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
 
@@ -1575,7 +1354,7 @@ describe("Allowly.receipts.get", () => {
   });
 
   it("returns signed envelope", async () => {
-    const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc", decision: "allow", alg: "Ed25519", key_id: "k", signature: "sig" };
+    const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc", decision: "allow", key_id: "k" });
     const fetch = makeFetch(200, { status: "signed", receipt: signedReceipt });
     const client = new Allowly({ ...CLIENT_OPTS, fetch });
     const r = await client.receipts.get("rcp_abc");
@@ -1591,7 +1370,7 @@ describe("Allowly.receipts.get", () => {
 
 describe("Allowly.receipts.fetchSigned", () => {
   it("polls until signed and returns receipt dict", async () => {
-    const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
+    const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
     let call = 0;
     const fetch = vi.fn().mockImplementation(async () => {
       call++;
@@ -1607,7 +1386,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   });
 
   it("continues polling across transport, HTTP 408, and HTTP 5xx failures", async () => {
-    const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
+    const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
     const fetch = vi.fn()
       .mockRejectedValueOnce(new TypeError("offline"))
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -1632,7 +1411,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   it("honors Retry-After while retrying HTTP 429", async () => {
     vi.useFakeTimers();
     try {
-      const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
+      const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
       const fetch = vi.fn()
         .mockResolvedValueOnce(new Response(JSON.stringify({
           error: { code: "rate_limited", message: "slow down" },
@@ -1696,7 +1475,7 @@ describe("Allowly.receipts.fetchSigned", () => {
   it("default timeout covers one >60s signer tick; explicit shorter timeout still fails", async () => {
     vi.useFakeTimers();
     try {
-      const signedReceipt = { schema_version: "4", receipt_id: "rcp_abc" };
+      const signedReceipt = wrapReceipt({ schema_version: "5", receipt_id: "rcp_abc" });
       const start = Date.now();
       const fetch = vi.fn().mockImplementation(async () => ({
         ok: true,

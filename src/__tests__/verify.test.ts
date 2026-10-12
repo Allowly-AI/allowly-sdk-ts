@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { signedReceipt as wrapReceipt, changedReceipt } from "./jws-fixture.js";
 import {
-  canonicalize,
   clearKeysDocCache,
   fetchKeysDoc,
   loadKeysFromJson,
@@ -42,12 +42,12 @@ function signedPolicyEvalReceipt() {
   const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
   const keyId = "test-key/v1";
   const payload = {
-    schema_version: "4",
+    schema_version: "5",
     receipt_id: "rcp_policy_eval",
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
     decision: "confirm",
-    reason: "confirm_condition_matched",
+    reason: "policy_rule_matched",
     user_id: "cand_55ab2",
     agent_id: "scout_referrals",
     action: "hiring.publish_feedback",
@@ -57,19 +57,19 @@ function signedPolicyEvalReceipt() {
       checks_failed: "pii_detected",
     },
     authorization_id: "auth_conditional",
-    engine_version: "2026-06-01.2",
+    engine_version: "sha256:" + "a".repeat(64),
+    policy_ref: { policy_id: "pol_fixture", policy_version: 1, definition_sha256: "b".repeat(64) },
     alg: "Ed25519",
     key_id: keyId,
     policy_eval: {
-      matched_condition: {
-        field: "checks_failed",
-        op: "in",
-        value: ["pii_detected", "tone_flag"],
+      input_sha256: "c".repeat(64),
+      result: {
+        profile: "allowly.basic.v1", status: "ok", decision: "confirm",
+        target: "agent_owner", matched_rule_id: "needs_review",
+        evaluated_fields: { checks_failed: "pii_detected" },
       },
-      field_value: "pii_detected",
     },
   };
-  const signature = sign(null, canonicalize(payload), privateKey);
   return {
     keysDoc: {
       workspace_id: "ws_1",
@@ -83,10 +83,7 @@ function signedPolicyEvalReceipt() {
         },
       ],
     },
-    receipt: {
-      ...payload,
-      signature: b64url(signature),
-    },
+    receipt: wrapReceipt(payload, privateKey),
   };
 }
 
@@ -96,7 +93,7 @@ function signedSealReceipt(rawJson: string) {
   const publicKeyRaw = new Uint8Array(publicDer).slice(-32);
   const keyId = "seal-key/v1";
   const payload = {
-    schema_version: "4",
+    schema_version: "5",
     receipt_id: "rcp_seal",
     workspace_id: "ws_1",
     issued_at: "2026-06-09T17:04:39.114Z",
@@ -111,7 +108,8 @@ function signedSealReceipt(rawJson: string) {
       record_sha256: hashSealJson(rawJson),
     },
     authorization_id: "auth_seal",
-    engine_version: "2026-06-01.2",
+    engine_version: "sha256:" + "a".repeat(64),
+    policy_ref: { policy_id: "pol_fixture", policy_version: 1, definition_sha256: "b".repeat(64) },
     alg: "Ed25519",
     key_id: keyId,
   };
@@ -126,7 +124,7 @@ function signedSealReceipt(rawJson: string) {
         active_until: null,
       }],
     },
-    receipt: { ...payload, signature: b64url(sign(null, canonicalize(payload), privateKey)) },
+    receipt: wrapReceipt(payload, privateKey),
   };
 }
 
@@ -274,7 +272,7 @@ describe("loadKeysFromJson", () => {
 });
 
 describe("verifyReceipt", () => {
-  it("accepts a wire-4 receipt whose algorithm and key id are signed", async () => {
+  it("accepts a wire-5 receipt whose algorithm and key id are signed", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
 
@@ -283,7 +281,7 @@ describe("verifyReceipt", () => {
         expectedWorkspaceId: "ws_1",
         now: new Date("2026-06-09T17:05:00Z"),
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ decision: "confirm" });
   });
 
   it("rejects receipts from an older wire version", async () => {
@@ -291,25 +289,24 @@ describe("verifyReceipt", () => {
     const keys = loadKeysFromJson(keysDoc);
 
     await expect(
-      verifyReceipt({ ...receipt, schema_version: "3" }, keys, {
+      verifyReceipt(changedReceipt(receipt, { schema_version: "3" }), keys, {
         expectedWorkspaceId: "ws_1",
         now: new Date("2026-06-09T17:05:00Z"),
       }),
-    ).rejects.toThrow('unsupported schema_version: "3" (want "4")');
+    ).rejects.toThrow('unsupported schema_version: "3"');
   });
 
   it("rejects policy_eval on event receipts", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
-    const eventReceipt = {
-      ...receipt,
+    const eventClaims = {
       action: undefined,
       event: "authorization.create",
       decision: "authorization_granted",
       reason: "user_approved_via_customer_ui",
       resource: null,
     };
-    delete eventReceipt.action;
+    const eventReceipt = changedReceipt(receipt, eventClaims);
 
     await expect(
       verifyReceipt(eventReceipt, keys, {
@@ -322,17 +319,13 @@ describe("verifyReceipt", () => {
   it("rejects integers outside the safe range", async () => {
     const { keysDoc, receipt } = signedPolicyEvalReceipt();
     const keys = loadKeysFromJson(keysDoc);
-    const badReceipt = {
-      ...receipt,
+    const badReceipt = changedReceipt(receipt, {
       policy_eval: {
-        matched_condition: {
-          field: "transcript_completeness",
-          op: "eq",
-          value: Number.MAX_SAFE_INTEGER + 1,
-        },
-        field_value: 1,
+        input_sha256: "c".repeat(64),
+        result: { profile: "allowly.basic.v1", status: "ok", decision: "confirm", target: "agent_owner", matched_rule_id: "needs_review",
+          evaluated_fields: { transcript_completeness: Number.MAX_SAFE_INTEGER + 1 } },
       },
-    };
+    });
 
     await expect(
       verifyReceipt(badReceipt, keys, {
@@ -352,7 +345,7 @@ describe("verifyReceipt", () => {
 
     expect(() => loadKeysFromJson(badKeys)).toThrow("UTC millisecond precision");
 
-    const badReceipt = { ...receipt, issued_at: "2026-06-09T17:04:39.114" };
+    const badReceipt = changedReceipt(receipt, { issued_at: "2026-06-09T17:04:39.114" });
     await expect(
       verifyReceipt(badReceipt, keys, {
         expectedWorkspaceId: "ws_1",

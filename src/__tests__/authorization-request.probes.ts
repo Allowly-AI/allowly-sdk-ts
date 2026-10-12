@@ -1,85 +1,58 @@
-import type { AuthorizationCreateRequest } from "../types.js";
+import type { AuthorizationCreateRequest, BasicPolicy, PolicyDefinition } from "../types.js";
 import { Allowly } from "../client.js";
 
-// Compile-time probes for the two-shape authorization request union.
-// No runtime assertions here — `npm run typecheck` is the test.
+// Exact logical policy edition and optional names-only action scope.
+({ userId: "u1", policyId: "p1", policyVersion: 1 }) satisfies AuthorizationCreateRequest;
+({
+  userId: "u1", policyId: "p1", policyVersion: 1, actions: ["email.send"],
+  expiresAt: "2027-01-01T00:00:00Z", budgetLimitMicros: 0, replaces: "auth_old",
+}) satisfies AuthorizationCreateRequest;
 
+// @ts-expect-error a policy version is required
 ({ userId: "u1", policyId: "p1" }) satisfies AuthorizationCreateRequest;
-
+// @ts-expect-error the old inline grant shape is gone
+({ userId: "u1", agentId: "a1", actions: ["email.send"], expiresAt: new Date() }) satisfies AuthorizationCreateRequest;
 ({
-  userId: "u1",
-  policyId: "p1",
-  expiresAt: "2026-12-31T00:00:00Z",
-  budgetLimitMicros: 50_000_000,
-}) satisfies AuthorizationCreateRequest;
-
-({
-  userId: "u1",
-  agentId: "a1",
-  actions: ["email.send"],
-  expiresAt: "2026-12-31T00:00:00Z",
-}) satisfies AuthorizationCreateRequest;
-
-({
-  userId: "u1",
-  agentId: "a1",
+  userId: "u1", policyId: "p1", policyVersion: 1,
+  // @ts-expect-error action objects/inline constraints are not grant scope
   actions: [{ name: "email.send", constraints: { max_per_day: 5 } }],
-  expiresAt: new Date("2026-12-31T00:00:00Z"),
-  replaces: "auth_old",
-  requiresConfirmFor: ["email.send"],
-  requiresEscalationFor: ["candidate.delete"],
-  requiresDenyFor: ["payments.send"],
-  escalationTargets: { "candidate.delete": "compliance" },
 }) satisfies AuthorizationCreateRequest;
-
 ({
-  userId: "u1",
-  policyId: "p1",
-  // @ts-expect-error policy-based requests cannot override reviewed confirmation decisions
+  userId: "u1", policyId: "p1", policyVersion: 1,
+  // @ts-expect-error reviewed decisions belong to the retained definition
   requiresConfirmFor: ["email.send"],
 }) satisfies AuthorizationCreateRequest;
 
-({
-  userId: "u1",
-  policyId: "p1",
-  // @ts-expect-error policy-based requests cannot override reviewed escalation decisions
-  requiresEscalationFor: ["candidate.delete"],
-}) satisfies AuthorizationCreateRequest;
-
-({
-  userId: "u1",
-  policyId: "p1",
-  // @ts-expect-error policy-based requests cannot override reviewed deny decisions
-  requiresDenyFor: ["payments.send"],
-}) satisfies AuthorizationCreateRequest;
-
-({
-  userId: "u1",
-  policyId: "p1",
-  // @ts-expect-error policy-based requests cannot override reviewed escalation targets
-  escalationTargets: { "candidate.delete": "compliance" },
-}) satisfies AuthorizationCreateRequest;
-
+const definition: PolicyDefinition = {
+  profile: "allowly.policy.v1", agent_id: "a1", default_expiry_days: 7,
+  actions: [{
+    policy: { profile: "allowly.basic.v1", action: "email.send",
+      decision: "confirm", target: "agent_owner", fields: { tags: "list" },
+      rules: [{ id: "sensitive-tags", decision: "escalate", target: "member:reviewer",
+        conditions: [
+          { field: "tags", op: "contains_any", value: ["sensitive", 1, true, null] },
+          { field: "tags", op: "contains_none", value: ["internal"] },
+          { field: "tags", op: "empty", value: false },
+        ] }] },
+    guards: {}, executable_operations: [],
+  }],
+};
+const client = new Allowly({ apiKey: "setup-key" });
+({ ...definition.actions[0].policy,
+  // @ts-expect-error old fallback fields are not policy authority
+  default_decision: "allow", default_target: null,
+}) satisfies BasicPolicy;
+void client.policies.create({ policyId: "p1", definition });
+void client.policies.preview({ definition, action: "email.send", context: {} });
+void client.policies.publish({ policyId: "p1", definition, idempotencyKey: "publish-p1" });
+// @ts-expect-error publication requires an explicit stable idempotency key
+void client.policies.publish({ policyId: "p1", definition });
 new Allowly({
   apiKey: "test-key",
   // @ts-expect-error fail-open is only configurable per action
   defaultFallback: "fail_open",
 });
-
-const client = new Allowly({ apiKey: "test-key" });
 client.authorizations.revoke("auth_old", {
   // @ts-expect-error replacements must use authorizations.create({ replaces: "auth_old" })
   supersededBy: "auth_new",
 });
-
-// @ts-expect-error one of the two request shapes is required
-({ userId: "u1" }) satisfies AuthorizationCreateRequest;
-
-// @ts-expect-error mixing policy and inline shapes is rejected by the API (422)
-({ userId: "u1", policyId: "p1", agentId: "a1", actions: ["email.send"], expiresAt: "2026-12-31T00:00:00Z" }) satisfies AuthorizationCreateRequest;
-
-// @ts-expect-error the inline flow requires expiresAt
-({ userId: "u1", agentId: "a1", actions: ["email.send"] }) satisfies AuthorizationCreateRequest;
-
-// @ts-expect-error the inline flow requires actions
-({ userId: "u1", agentId: "a1", expiresAt: "2026-12-31T00:00:00Z" }) satisfies AuthorizationCreateRequest;

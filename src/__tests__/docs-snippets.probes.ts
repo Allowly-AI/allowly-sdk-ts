@@ -6,6 +6,19 @@
 import { Allowly, fetchKeysDoc, loadKeysFromJson, SealWebhookClient, verifyReceipt, VerificationError, verifyResolutionWebhook } from "../index.js";
 import type { ConfirmationStatus, EscalationStatus, PromptStatus, ConfirmationAuthorityStatus, EscalationAuthorityStatus } from "../index.js";
 
+export async function docsIntegrationAuthorizationSnippet(): Promise<string> {
+  const client = new Allowly({ apiKey: "allowly_l1_s001_..." });
+  const authorization = await client.authorizations.create({
+    userId: "usr_8821",
+    policyId: "email-sender",
+    policyVersion: 1,
+    actions: ["email.send"],
+    expiresAt: "2026-12-31T00:00:00Z",
+    metadata: { source: "onboarding" },
+  });
+  return authorization.authorizationId;
+}
+
 export async function docsVerifySnippet(receiptId: string): Promise<void> {
   const client = new Allowly({ apiKey: "allowly_l1_s001_..." });
 
@@ -35,7 +48,7 @@ export async function docsConfirmationSnippet(nonce: string, approved: boolean):
     void childAuthorizationId;
   } else {
     const childAuthorizationId: null = resolution.authorizationId;
-    const declined: "not_approved" | "denied_by_user" = resolution.decision;
+    const declined: "not_approved" = resolution.decision;
     void childAuthorizationId;
     void declined;
   }

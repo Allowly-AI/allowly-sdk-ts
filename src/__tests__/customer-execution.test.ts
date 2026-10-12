@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
-import { createECDH, createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createECDH, createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { signedReceipt as wrapReceipt } from "./jws-fixture.js";
 
 const mocks = vi.hoisted(() => ({
   dnsLookup: vi.fn(),
@@ -23,7 +24,6 @@ vi.mock("node:tls", () => ({ connect: mocks.tlsConnect }));
 
 import {
   Allowly,
-  canonicalize,
   commitCustomerHttpRequest,
   completeCustomerExecutionEvidence,
   hashSealValue,
@@ -327,7 +327,7 @@ function signedDecisionReceipt(
   const publicDer = publicKey.export({ format: "der", type: "spki" });
   const keyId = "test-key/v1";
   const payload = {
-    schema_version: "4",
+    schema_version: "5",
     receipt_id: "rcp_customer",
     workspace_id: "ws_1",
     issued_at: "2026-09-27T12:00:01.000Z",
@@ -344,15 +344,13 @@ function signedDecisionReceipt(
       },
     },
     authorization_id: "auth_1",
-    engine_version: "2026-09-27.1",
+    engine_version: "sha256:" + "a".repeat(64),
+    policy_ref: { policy_id: "pol_fixture", policy_version: 1, definition_sha256: "b".repeat(64) },
     alg: "Ed25519",
     key_id: keyId,
     ...overrides,
   };
-  const receipt = {
-    ...payload,
-    signature: Buffer.from(sign(null, canonicalize(payload), privateKey)).toString("base64url"),
-  };
+  const receipt = wrapReceipt(payload, privateKey);
   const keys = loadKeysFromJson({
     workspace_id: "ws_1",
     keys: [{

@@ -8,6 +8,7 @@ export {
   completeCustomerExecutionEvidence,
 } from "./customer-execution.js";
 export { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
+export { validatePolicyDefinition, parsePolicyReference, parsePolicyEvaluation } from "./policies.js";
 export * as identifiers from "./identifiers.js";
 export * from "./verify.js";
 export type {
@@ -84,7 +85,9 @@ export type {
   SealWebhookStatus,
   Decision,
   FallbackMode,
-  ActionEntry,
-  ExecutableOperationGrant,
+  PolicyReference, BasicCondition, BasicRule, BasicPolicy, ActionGuards,
+  PolicyExecutableOperationGrant, PolicyActionEntry, PolicyDefinition, ProvisionalPolicyResult,
+  PolicyEvalInfo, PolicyCreateRequest, PolicyResponse, PolicyListResponse,
+  PolicyPreviewRequest, PolicyPreviewResponse, PolicyPublishResponse,
   AllowlyError,
 } from "./types.js";

@@ -17,7 +17,7 @@ import { isIP } from "node:net";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { connect as tlsConnect } from "node:tls";
-import type { PublicKey } from "@allowly/verifier";
+import type { JwsReceipt, PublicKey } from "@allowly/verifier";
 
 import type { Allowly } from "./client.js";
 import { AllowlyProtocolError } from "./error.js";
@@ -33,7 +33,7 @@ import type {
   PrepareExecutionRequest,
   ResumeHttpExecutionRequest,
 } from "./types.js";
-import { hashSealValue, verifyReceipt } from "./verify.js";
+import { decodeReceipt, hashSealValue, verifyReceipt } from "./verify.js";
 import { loadInstalledWitnessConfig } from "./witness-config.js";
 
 const HEADER_PROFILE = "allowly.execution.header.v1";
@@ -345,7 +345,7 @@ export async function completeCustomerExecutionEvidence(
     now?: Date;
   },
 ): Promise<CustomerExecutionEvidencePackage> {
-  let receipt: Record<string, unknown>;
+  let receipt: JwsReceipt;
   if (evidencePackage.decisionReceipt.status === "pending") {
     receipt = await client.receipts.fetchSigned(evidencePackage.decisionReceipt.receiptId, {
       pollInterval: opts.pollInterval,
@@ -354,12 +354,12 @@ export async function completeCustomerExecutionEvidence(
   } else {
     receipt = evidencePackage.decisionReceipt.receipt;
   }
-  await verifyReceipt(receipt, publicKeys, {
+  const claims = await verifyReceipt(receipt, publicKeys, {
     expectedWorkspaceId: opts.expectedWorkspaceId,
     trustedKeyFingerprints: opts.trustedKeyFingerprints,
     now: opts.now,
   });
-  validateReceiptApprovalLink(receipt, evidencePackage);
+  validateReceiptApprovalLink({ ...claims }, evidencePackage);
   return {
     ...structuredClone(evidencePackage),
     decisionReceipt: { status: "signed", receipt },
@@ -864,7 +864,7 @@ function validateWaitingResponse(
 function decisionReceiptId(response: CustomerExecutionResponse): string {
   return response.decisionReceipt.status === "pending"
     ? response.decisionReceipt.receiptId
-    : stringField(response.decisionReceipt.receipt, "receipt_id");
+    : decodeReceipt(response.decisionReceipt.receipt).receipt_id;
 }
 
 function waitingResult(response: CustomerExecutionResponse): CustomerHttpExecutionResult {

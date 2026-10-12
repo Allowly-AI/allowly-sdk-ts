@@ -9,7 +9,7 @@ Requires Node.js 20 or newer. This package is ESM-only.
 
 Confirmation responses expose `receipt`, a pending resolution envelope or
 `null` for an older runtime/replay. The decision is `approved` or
-`not_approved`; `denied_by_user` remains accepted for older runtimes. Poll
+`not_approved`; legacy outcomes are rejected by this fresh rebuild. Poll
 `client.receipts.fetchSigned(response.receipt.receiptId)` when a receipt is
 present, then verify it with your configured workspace and trusted keys.
 The signature authenticates the recorded client report, not a named human's
@@ -17,8 +17,8 @@ identity or approval. Resolution does not dispatch an action. A standalone
 Check needs a fresh Check with the original authorization. A saved native
 Execute uses Continue, which validates current policy within the same operation.
 
-SDK 0.7.0 requires `@allowly/verifier ^4.3.1` to verify
-`confirmation.resolve` receipts on wire format 4.
+This SDK uses the published `@allowly/verifier` 5.0.0 and accepts only receipt
+wire 5.
 
 ## Confirmation and escalation status
 
@@ -312,8 +312,9 @@ using witnessed execution. The default path downloads a verified precompiled
 Rust helper. Use `allowly setup witness --build-from-source` to download reviewed
 Allowly adapter source and build it with pinned official TLSNotary libraries.
 That path needs Rust 1.95.0, Cargo, Git, Bash, and a native C build toolchain.
-Both paths verify release checksums and remain blocked until reviewed
-`witness-v0.1.0` assets are published and their manifest digest is pinned in the CLI.
+Both paths use the published experimental
+[`witness-v0.1.1` release](https://github.com/Allowly-AI/allowly-mcp/releases/tag/witness-v0.1.1).
+The CLI verifies the pinned checksum manifest before downloading an archive.
 Offline setup still accepts
 `--archive FILE --sha256 HEX` or a reviewed `--helper FILE`.
 The interactive command pins the public witness key after you compare its
@@ -349,6 +350,66 @@ The helper and Allowly-hosted Witness Bridge source live together in
 separate TLSNotary MCP package. `@allowly/mcp` supports both evidence modes.
 Customer setup installs only the helper, not the hosted witnessing socket.
 
+## Author and preview an immutable policy
+
+Policy create/get/list/archive and setup preview/publish require a setup/CLI
+credential, not a runtime API key or an agent token. Keep the runtime client
+for Check and native Execute. Setup calls never sign agent identity.
+
+```typescript
+import { Allowly, type PolicyDefinition } from "@allowly/sdk";
+
+const setup = new Allowly({ apiKey: process.env.ALLOWLY_SETUP_KEY! });
+const definition: PolicyDefinition = {
+  profile: "allowly.policy.v1", agent_id: "research_agent",
+  actions: [{
+    policy: {
+      profile: "allowly.basic.v1", action: "web.search",
+      decision: "allow", target: null,
+      fields: { risk: "integer" },
+      rules: [{ id: "review-high-risk", decision: "confirm", target: "agent_owner",
+        conditions: [{ field: "risk", op: "gte", value: 2 }] }],
+    },
+    guards: {}, executable_operations: [],
+  }],
+  default_expiry_days: 30,
+};
+const created = await setup.policies.create({ policyId: "research_agent", definition });
+const preview = await setup.policies.preview({ definition, action: "web.search", context: { risk: 2 } });
+console.log(preview.provisional, preview.policyEval.result.decision, preview.policyEval.input_sha256);
+const retained = await setup.policies.get("research_agent"); // Latest active edition.
+const page = await setup.policies.list({ limit: 20 });
+// Publish a successor only when ready, naming its exact previous reference:
+// const published = await setup.policies.publish({ policyId: "research_agent",
+//   definition: updatedDefinition, previousPolicyRef: retained.policyRef,
+//   idempotencyKey: "publish-research-2" });
+// await setup.policies.archive("research_agent");
+```
+
+Definitions, `policyRef` members, and `policyEval` evidence keep canonical
+snake_case JSON fields. The SDK does not rename signed evidence. Rules are
+ordered; comparison operators are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`,
+`not_in`, `exists`, `contains_any`, `contains_none`, and `empty`. A rule matches
+if any condition matches (OR). Valid comparisons use fixed priority: deny,
+escalate, confirm, then allow. Rules cannot weaken the action decision.
+Action deny always wins. Otherwise, a matching rule wins a tie with the action;
+the first matching rule wins ties between rules. If no rule matches, the action
+decision stays unchanged. List fields support
+overlap with 1–64 scalar values, or `empty` with a strict boolean value.
+List items may mix strings, integers, booleans, and null, but not nested arrays
+or objects. Values must match declared field
+types and use safe integers. Allow/deny targets are null, confirm targets are
+`agent_owner`, and escalation targets are actual `member:<account_user_id>`
+values. Publishing checks agent ownership, setup provenance, current membership, and executable
+catalog bindings on the server. Guessed members or team labels are not targets.
+
+Preview calculates only provisional OPA rules, not grants, live guards, quotas,
+budgets, or final execution permission. Its result may differ from Check's
+final decision. Parsing evidence or verifying a signature is not independent
+policy replay; replay needs original retained artifacts and pinned official
+native OPA. This SDK has no parallel TypeScript rule interpreter. Browser
+receipt verification alone cannot replay OPA.
+
 ## Create an authorization
 
 Create one authorization for the subject and store its ID in your application:
@@ -357,11 +418,17 @@ Create one authorization for the subject and store its ID in your application:
 const authorization = await allowly.authorizations.create({
   userId: "subject_abc123",
   policyId: "research_agent",
+  policyVersion: 1, // The exact retained edition selected during setup.
   expiresAt: "2026-12-31T00:00:00.000Z",
 });
 
 await saveAuthorizationId(authorization.authorizationId);
 ```
+
+The returned `policyRef` is the exact immutable edition and definition digest.
+Optional `actions` is a names-only subset of that edition; omit it to select
+all its actions. Inline action objects, `agentId`, constraints, and decision
+override maps are not accepted.
 
 Use opaque internal subject IDs. Avoid putting raw names, emails, documents, or
 other sensitive data into receipt fields unless that data is intentionally part
@@ -451,11 +518,17 @@ const receipt = await allowly.receipts.fetchSigned(receiptId);
 const workspaceId = process.env.ALLOWLY_WORKSPACE_ID!;
 const keys = loadKeysFromJson(await fetchKeysDoc(workspaceId));
 
-await verifyReceipt(receipt, keys, { expectedWorkspaceId: workspaceId });
+const claims = await verifyReceipt(receipt, keys, { expectedWorkspaceId: workspaceId });
+console.log(claims.decision);
 ```
 
 Take the expected workspace ID from trusted application configuration, not from
 the receipt being verified.
+
+The receipt is a flattened JWS with only `protected`, `payload`, and `signature`
+fields. Store and share that original envelope. `verifyReceipt` returns the
+verified claims for decisions and request binding. `decodeReceipt` only reads
+claims for display; it does not prove their signature or grant permission.
 
 ## Documentation
 
