@@ -38,6 +38,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@allowly/verifier": "file:../allowly-receipt-format/verifiers/typescript"
+    "@allowly/verifier": "^5.0.0"
   }
 }

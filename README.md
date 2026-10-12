@@ -17,10 +17,8 @@ identity or approval. Resolution does not dispatch an action. A standalone
 Check needs a fresh Check with the original authorization. A saved native
 Execute uses Continue, which validates current policy within the same operation.
 
-This unpublished local OPA worktree links `@allowly/verifier` 5.0.0 through
-`file:../allowly-receipt-format/verifiers/typescript` and accepts only receipt
-wire 5. Build the sibling verifier before `npm ci` and the SDK tests. Published
-SDK packages are unchanged; this does not request a nonexistent registry release.
+This SDK uses the published `@allowly/verifier` 5.0.0 and accepts only receipt
+wire 5.
 
 ## Confirmation and escalation status
 
@@ -314,8 +312,9 @@ using witnessed execution. The default path downloads a verified precompiled
 Rust helper. Use `allowly setup witness --build-from-source` to download reviewed
 Allowly adapter source and build it with pinned official TLSNotary libraries.
 That path needs Rust 1.95.0, Cargo, Git, Bash, and a native C build toolchain.
-Both paths verify release checksums and remain blocked until reviewed
-`witness-v0.1.0` assets are published and their manifest digest is pinned in the CLI.
+Both paths use the published experimental
+[`witness-v0.1.1` release](https://github.com/Allowly-AI/allowly-mcp/releases/tag/witness-v0.1.1).
+The CLI verifies the pinned checksum manifest before downloading an archive.
 Offline setup still accepts
 `--archive FILE --sha256 HEX` or a reviewed `--helper FILE`.
 The interactive command pins the public witness key after you compare its
