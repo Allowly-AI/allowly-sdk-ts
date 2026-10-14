@@ -3,7 +3,7 @@
  * (verify.md, sdk/typescript.md, integration.md). `npm run typecheck` is the
  * assertion that the documented shapes match the SDK's real signatures.
  */
-import { Allowly, fetchKeysDoc, loadKeysFromJson, SealWebhookClient, verifyReceipt, VerificationError, verifyResolutionWebhook } from "../index.js";
+import { Allowly, decodeReceipt, fetchKeysDoc, loadKeysFromJson, SealWebhookClient, verifyReceipt, VerificationError, verifyResolutionWebhook } from "../index.js";
 import type { ConfirmationStatus, EscalationStatus, PromptStatus, ConfirmationAuthorityStatus, EscalationAuthorityStatus } from "../index.js";
 
 export async function docsIntegrationAuthorizationSnippet(): Promise<string> {
@@ -38,6 +38,39 @@ export async function docsVerifySnippet(receiptId: string): Promise<void> {
 
   // sdk/typescript.md custom polling shape
   await client.receipts.fetchSigned(receiptId, { pollInterval: 2, timeout: 180 });
+}
+
+export async function docsBudgetAndFetchSnippet(authorizationId: string): Promise<void> {
+  const client = new Allowly({ apiKey: "allowly_l1_s001_..." });
+  const result = await client.check({
+    authorizationId,
+    actions: ["llm.enrich"],
+    estimatedCostMicros: 24_000,
+  });
+  const actionResult = result.results["llm.enrich"];
+  if (actionResult.reason === "budget_exceeded") {
+    throw new Error("This action would exceed the authorization budget.");
+  }
+  if (actionResult.budget) console.log(actionResult.budget.spentAfterMicros);
+  if (actionResult.decision !== "allow" || actionResult.isFallback || !actionResult.receipt) {
+    throw new Error("No recorded allow decision; do not execute or settle.");
+  }
+  const checkReceiptId = actionResult.receipt.status === "pending"
+    ? actionResult.receipt.receiptId
+    : decodeReceipt(actionResult.receipt.receipt).receipt_id;
+  await client.settleBudget({
+    checkReceiptId,
+    actualCostMicros: 18_000,
+    idempotencyKey: `settle-${checkReceiptId}`,
+  });
+  const signedReceipt = actionResult.receipt.status === "signed"
+    ? actionResult.receipt.receipt
+    : await client.receipts.fetchSigned(checkReceiptId);
+  const signedReceiptCustom = await client.receipts.fetchSigned(checkReceiptId, {
+    pollInterval: 2,
+    timeout: 180,
+  });
+  void [signedReceipt, signedReceiptCustom];
 }
 
 export async function docsConfirmationSnippet(nonce: string, approved: boolean): Promise<void> {
