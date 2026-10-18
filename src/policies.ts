@@ -74,6 +74,40 @@ export function parsePolicyReference(value: unknown): PolicyReference {
   }
   return raw as unknown as PolicyReference;
 }
+function validateEvidence(fields: Record<string, unknown>, value: unknown): void {
+  const evidence = exact(value, Object.keys(fields), "evidence");
+  if (!Object.keys(evidence).length) throw new AllowlyProtocolError("evidence must not be empty");
+  for (const [name, raw] of Object.entries(evidence)) {
+    const requirement = record(raw, "evidence requirement");
+    if (Object.prototype.hasOwnProperty.call(requirement, "all_of")) {
+      exact(requirement, ["all_of"], "derived evidence");
+      const dependencies = strings(requirement.all_of, "all_of", 16);
+      if (fields[name] !== "boolean" || dependencies.some(dependency =>
+        !Object.prototype.hasOwnProperty.call(fields, dependency) || fields[dependency] !== "boolean"
+        || Object.prototype.hasOwnProperty.call(record(evidence[dependency], "dependency"), "all_of"))) {
+        throw new AllowlyProtocolError("all_of requires direct boolean fields");
+      }
+    } else if (Object.prototype.hasOwnProperty.call(requirement, "transform")) {
+      exact(requirement, ["source", "transform", "empty_sources"], "domain evidence");
+      const source = text(requirement.source, "source", 64);
+      if (fields[name] !== "string" || requirement.transform !== "email_domain"
+        || !Array.isArray(requirement.empty_sources) || requirement.empty_sources.length > 8) {
+        throw new AllowlyProtocolError("invalid domain extraction");
+      }
+      const empty = requirement.empty_sources;
+      empty.forEach(item => text(item, "empty source", 64));
+      if (new Set(empty).size !== empty.length || empty.includes(source)) {
+        throw new AllowlyProtocolError("empty sources must be unique and exclude source");
+      }
+    } else {
+      exact(requirement, ["sources", "instruction"], "AI evidence");
+      strings(requirement.sources, "sources", 8, 64);
+      if (!text(requirement.instruction, "instruction", 2048).trim()) {
+        throw new AllowlyProtocolError("instruction must not be blank");
+      }
+    }
+  }
+}
 export function validatePolicyDefinition(value: unknown): PolicyDefinition {
   const raw = exact(document(value, "definition"), ["profile", "agent_id", "actions", "default_expiry_days"], "definition");
   if (raw.profile !== "allowly.policy.v1") throw new AllowlyProtocolError("definition profile is unsupported");
@@ -84,7 +118,7 @@ export function validatePolicyDefinition(value: unknown): PolicyDefinition {
   }
   const names = new Set<string>(), operations = new Set<string>();
   for (const item of raw.actions) {
-    const entry = exact(item, ["policy", "guards", "executable_operations"], "policy action");
+    const entry = exact(item, ["policy", "guards", "executable_operations"], "policy action", ["evidence"]);
     const policy = exact(entry.policy, ["profile", "action", "decision", "target", "fields", "rules"], "basic policy");
     const name = text(policy.action, "policy.action", 64);
     if (names.has(name) || ["allow", "deny", "confirm", "escalate"].includes(name)) {
@@ -101,6 +135,7 @@ export function validatePolicyDefinition(value: unknown): PolicyDefinition {
         throw new AllowlyProtocolError("policy field type is unsupported");
       }
     }
+    if (Object.prototype.hasOwnProperty.call(entry, "evidence")) validateEvidence(fields, entry.evidence);
     if (!Array.isArray(policy.rules) || policy.rules.length > 32) throw new AllowlyProtocolError("policy.rules must contain at most 32 ordered rules");
     const ruleIds = new Set<string>();
     for (const item of policy.rules) {

@@ -7,6 +7,17 @@ import type { BasicCondition, PolicyDefinition } from "../types.js";
 const BASE = "https://api.example.com";
 const vectors: { signature_cases: Array<{ name: string; definition: PolicyDefinition; receipt: any }> } = JSON.parse(readFileSync(new URL(import.meta.resolve("@allowly/verifier/vectors/policy/profile-v1.json")), "utf8"));
 function definition(): PolicyDefinition { return structuredClone(vectors.signature_cases[1].definition); }
+function evidenceDefinition(): PolicyDefinition {
+  const value = definition(), entry = value.actions[0];
+  Object.assign(entry.policy, { fields: { a: "boolean", b: "boolean", both: "boolean", domain: "string" }, rules: [] });
+  entry.evidence = {
+    a: { sources: ["text"], instruction: "Identify a confidential statement." },
+    b: { sources: ["to"], instruction: "Is the recipient external to example.com?" },
+    both: { all_of: ["a", "b"] },
+    domain: { source: "to", transform: "email_domain", empty_sources: ["cc", "bcc"] },
+  };
+  return value;
+}
 function response(value = definition(), policyId = "review", version = 1) {
   return { policy_ref: { policy_id: policyId, policy_version: version, definition_sha256: definitionDigest(value) },
     definition: value, description: null, created_by: "member:owner", created_at: "2026-10-10T00:00:00Z", deleted_at: null };
@@ -17,6 +28,27 @@ function fetchResponse(status: number, value: unknown) {
 function mockFetch(status: number, value: unknown) { return vi.fn().mockResolvedValue(fetchResponse(status, value)); }
 
 describe("canonical policy JSON", () => {
+  it("retains approved evidence and commits edits while leaving absent metadata absent", () => {
+    const old = definition(), value = evidenceDefinition();
+    expect(validatePolicyDefinition(old)).toEqual(old);
+    expect(validatePolicyDefinition(old).actions[0]).not.toHaveProperty("evidence");
+    expect(validatePolicyDefinition(value)).toEqual(value);
+    const changed = evidenceDefinition();
+    changed.actions[0].evidence!.a = { sources: ["text"], instruction: "Changed instruction." };
+    expect(definitionDigest(changed)).not.toBe(definitionDigest(value));
+  });
+  it.each<Array<(entry: any) => void>[number]>([
+    e => e.evidence = null, e => e.evidence = {}, e => delete e.evidence.a,
+    e => e.evidence.a.instruction = " ", e => e.evidence.a.sources = ["text", "text"],
+    e => e.evidence.a.sources = ["x".repeat(65)], e => e.evidence.a.extra = true,
+    e => e.evidence.both.all_of = ["domain"], e => e.evidence.both.all_of = ["both"],
+    e => e.evidence.both.all_of = ["a", "a"], e => e.evidence.domain.transform = "arbitrary_code",
+    e => e.evidence.domain.empty_sources = ["to"], e => delete e.evidence.domain.empty_sources,
+    e => e.policy.fields.domain = "boolean",
+  ])("rejects invalid evidence before save/publish %#", edit => {
+    const value = evidenceDefinition(); edit(value.actions[0]);
+    expect(() => validatePolicyDefinition(value)).toThrow(AllowlyProtocolError);
+  });
   it.each(vectors.signature_cases)("keeps shared $name evidence without renaming or recalculating it", item => {
     expect(validatePolicyDefinition(item.definition)).toEqual(item.definition);
     expect(parsePolicyEvaluation(decodeReceipt(item.receipt).policy_eval)).toEqual(decodeReceipt(item.receipt).policy_eval);
@@ -163,6 +195,12 @@ describe("canonical policy JSON", () => {
 });
 
 describe("policy setup transport", () => {
+  it("preserves evidence metadata through create and response hash checks", async () => {
+    const value = evidenceDefinition(), fetch = mockFetch(201, response(value));
+    const client = new Allowly({ apiKey: "setup-key", baseUrl: BASE, fetch });
+    expect((await client.policies.create({ policyId: "review", definition: value })).definition).toEqual(value);
+    expect(JSON.parse(fetch.mock.calls[0][1].body).actions[0].evidence).toEqual(value.actions[0].evidence);
+  });
   it.each(["2026-04-19.1", "a".repeat(64), `sha256:${"A".repeat(64)}`, `sha256:${"a".repeat(63)}`, "", null])("rejects old or malformed Check engine identity %j without fallback", async engine => {
     const client = new Allowly({ apiKey: "runtime-key", baseUrl: BASE, fallbackByAction: { "web.search": "fail_open" }, fetch: mockFetch(200, {
       authorization_id: "auth_1", engine_version: engine,
