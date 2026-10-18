@@ -352,6 +352,14 @@ Customer setup installs only the helper, not the hosted witnessing socket.
 
 ## Author and preview an immutable policy
 
+Action entries may include approved `evidence` requirements keyed by every
+declared field: AI `{sources, instruction}`, deterministic
+`{source, transform: "email_domain", empty_sources}`, or a boolean
+`{all_of: [direct_boolean_field, ...]}`. Requirements are retained in the whole
+definition digest. Omitted evidence stays omitted. Rules still use OR.
+This source revision uses the maintainer's no-version-bump exception before
+external clients; no registry package is published by this change.
+
 Policy create/get/list/archive and setup preview/publish require a setup/CLI
 credential, not a runtime API key or an agent token. Keep the runtime client
 for Check and native Execute. Setup calls never sign agent identity.

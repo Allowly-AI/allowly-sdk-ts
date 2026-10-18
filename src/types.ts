@@ -509,10 +509,16 @@ export interface PolicyExecutableOperationGrant {
   definition_fingerprint: string;
   minimum_evidence_mode: CustomerEvidenceMode;
 }
+export type PolicyEvidenceRequirement =
+  | { sources: string[]; instruction: string }
+  | { source: string; transform: "email_domain"; empty_sources: string[] }
+  | { all_of: string[] };
 export interface PolicyActionEntry {
   policy: BasicPolicy;
   guards: ActionGuards;
   executable_operations: PolicyExecutableOperationGrant[];
+  /** Approved extraction requirements; omitted for ordinary policy inputs. */
+  evidence?: Record<string, PolicyEvidenceRequirement>;
 }
 export interface PolicyDefinition {
   profile: "allowly.policy.v1";

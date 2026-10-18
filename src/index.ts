@@ -87,6 +87,7 @@ export type {
   FallbackMode,
   PolicyReference, BasicCondition, BasicRule, BasicPolicy, ActionGuards,
   PolicyExecutableOperationGrant, PolicyActionEntry, PolicyDefinition, ProvisionalPolicyResult,
+  PolicyEvidenceRequirement,
   PolicyEvalInfo, PolicyCreateRequest, PolicyResponse, PolicyListResponse,
   PolicyPreviewRequest, PolicyPreviewResponse, PolicyPublishResponse,
   AllowlyError,
