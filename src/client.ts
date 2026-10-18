@@ -1,5 +1,6 @@
 import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
 import { ResolutionWebhookResource } from "./resolution-webhook.js";
+import { ObserveResource } from "./observe.js";
 import { PoliciesResource, parsePolicyEvaluation, parsePolicyReference, document, exact, integer, strings, text } from "./policies.js";
 import {
   SEAL_ACTION,
@@ -90,6 +91,7 @@ export class Allowly {
   readonly escalations: EscalationsResource;
   readonly receipts: ReceiptsResource;
   readonly resolutionWebhook: ResolutionWebhookResource;
+  readonly observe: ObserveResource;
 
   constructor(options: AllowlyOptions) {
     this.apiKey = options.apiKey;
@@ -122,6 +124,7 @@ export class Allowly {
     this.escalations = new EscalationsResource(this);
     this.receipts = new ReceiptsResource(this);
     this.resolutionWebhook = new ResolutionWebhookResource(this);
+    this.observe = new ObserveResource(this);
   }
 
   /** Runtime readiness only; does not test policy or provider permission. */

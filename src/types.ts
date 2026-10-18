@@ -2,6 +2,32 @@ import type { JwsReceipt } from "@allowly/verifier";
 
 export type Decision = "allow" | "deny" | "confirm" | "escalate";
 export type FallbackMode = "fail_open" | "fail_closed";
+export type ObserveReportedExecution = "accepted" | "sent" | "failed" | "unknown";
+export interface ObserveSubmitRequest {
+  eventId: string;
+  agentId: string;
+  action: string;
+  policyRef: PolicyReference;
+  occurredAt: string;
+  reportedExecution: ObserveReportedExecution;
+  sources: Record<string, string>;
+}
+export interface ObserveEventStatus {
+  eventId: string;
+  agentId: string;
+  action: string;
+  policyRef: PolicyReference;
+  mode: "observe";
+  intervention: "none";
+  reportedExecution: ObserveReportedExecution;
+  processingStatus: "pending" | "processing" | "complete" | "failed";
+  assessmentStatus: "not_assessed" | "no_violation_found" | "violation_detected" | "insufficient_evidence";
+  signingStatus: "unavailable" | "pending" | "signed";
+  observedActionId: string | null;
+  assessmentId: string | null;
+  dashboardUrl: string | null;
+  lastError: string | null;
+}
 
 export interface CustomExecutableCreateRequest {
   name: string;

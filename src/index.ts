@@ -12,6 +12,9 @@ export { validatePolicyDefinition, parsePolicyReference, parsePolicyEvaluation }
 export * as identifiers from "./identifiers.js";
 export * from "./verify.js";
 export type {
+  ObserveReportedExecution,
+  ObserveSubmitRequest,
+  ObserveEventStatus,
   AllowlyOptions,
   CustomExecutableCreateRequest,
   EnabledExecutableResponse,
