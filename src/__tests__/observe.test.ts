@@ -56,7 +56,7 @@ describe("Observe reports", () => {
   it.each([
     { eventId: "../escape" }, { sources: { body: true } }, { sources: {} }, { sources: { ["x".repeat(65)]: "text" } },
     { sources: { body: "x".repeat(40960) } }, { sources: { body: "\0" } }, { occurredAt: "2026-10-18T20:00:00" },
-    { langfuseSecret: "secret" }, { policyRef: { ...reference, policy_version: true } },
+    { collectorSecret: "secret" }, { policyRef: { ...reference, policy_version: true } },
   ])("rejects invalid capture before network %j", async change => {
     const fetch = vi.fn();
     await expect(client(fetch).observe.submit({ ...event, ...change } as ObserveSubmitRequest)).rejects.toThrow(AllowlyProtocolError);

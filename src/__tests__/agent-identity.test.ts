@@ -35,3 +35,12 @@ test("native credential rejects a mismatched private and public key", () => {
     binding_id: "binding", key_id: "key", private_key_jwk: jwk,
   })).toThrow("Invalid Allowly agent credential");
 });
+
+test("native credential normalizes a malformed private key import error", () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const jwk = { ...privateKey.export({ format: "jwk" }), d: "AA" };
+  expect(() => new NativeAgentCredential({
+    version: 1, provider: "allowly", workspace_id: "ws", agent_id: "agent",
+    binding_id: "binding", key_id: "key", private_key_jwk: jwk,
+  })).toThrow("Invalid Allowly agent credential");
+});
