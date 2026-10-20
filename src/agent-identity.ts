@@ -27,7 +27,11 @@ export class NativeAgentCredential {
         || !value.private_key_jwk.x || !value.private_key_jwk.d) {
       throw new Error("Invalid Allowly agent credential");
     }
-    this.key = createPrivateKey({ key: value.private_key_jwk, format: "jwk" });
+    try {
+      this.key = createPrivateKey({ key: value.private_key_jwk, format: "jwk" });
+    } catch {
+      throw new Error("Invalid Allowly agent credential");
+    }
     const publicJwk = createPublicKey(this.key).export({ format: "jwk" });
     if (publicJwk.x !== value.private_key_jwk.x) throw new Error("Invalid Allowly agent credential");
     this.data = value;
