@@ -9,7 +9,7 @@ void submitted; void current;
 // @ts-expect-error Captured source values are strings, not predictions.
 void sdk.observe.submit({ ...request, sources: { medical: true } });
 // @ts-expect-error Server implementation credentials are not customer inputs.
-void sdk.observe.submit({ ...request, langfuseSecret: "secret" });
+void sdk.observe.submit({ ...request, collectorSecret: "secret" });
 // @ts-expect-error A completed report is required.
 void sdk.observe.submit({ ...request, reportedExecution: "allow" });
 // @ts-expect-error Reporting has no synchronous enforcement decision.
