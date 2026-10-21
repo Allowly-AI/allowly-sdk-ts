@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+- Submit captured action reports with `observe.submit` and read their status
+  with `observe.get`. Observe reports do not authorize or block actions.
+- Retain and validate approved policy evidence requirements in the definition
+  digest. Normalize malformed native credential import errors.
+
 ## 0.8.0
 
 - Use verifier 5.0.0 and receipt wire 5 only, preserving the original signed

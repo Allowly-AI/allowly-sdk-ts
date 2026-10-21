@@ -299,56 +299,7 @@ const completeEvidence = await completeCustomerExecutionEvidence(
 await saveEvidence(completeEvidence);
 ```
 
-`receipt` evidence records the customer runtime's reported HTTP outcome. It
-does not verify business completion. If the policy upgrades the request to
-`witnessed`, `executeHttp` fails closed unless native witness options were
-provided. The current native profile is limited to HTTPS on port 443, HTTP/1.1
-over TLS 1.2, a 2 KiB request transcript, a 16 KiB UTF-8 response, and no
-redirect follow. Use witnessed mode only when the catalog and deployed witness
-service report it available.
-
-Run `allowly setup witness` from `@allowly-ai/cli` for the same workspace before
-using witnessed execution. The default path downloads a verified precompiled
-Rust helper. Use `allowly setup witness --build-from-source` to download reviewed
-Allowly adapter source and build it with pinned official TLSNotary libraries.
-That path needs Rust 1.95.0, Cargo, Git, Bash, and a native C build toolchain.
-Both paths use the published experimental
-[`witness-v0.1.1` release](https://github.com/Allowly-AI/allowly-mcp/releases/tag/witness-v0.1.1).
-The CLI verifies the pinned checksum manifest before downloading an archive.
-Offline setup still accepts
-`--archive FILE --sha256 HEX` or a reviewed `--helper FILE`.
-The interactive command pins the public witness key after you compare its
-fingerprint with the authenticated workspace page. Then request witnessed mode
-and give the SDK a new
-evidence directory for each operation:
-
-```typescript
-await allowly.executeHttp("https://api.vendor.example/v1/items", {
-  operationId: "items-read-1",
-  authorizationId: "auth_...",
-  enabledExecutableId: "exe_...",
-  catalogOperationId: "vendor.items.list",
-  action: "vendor.items.list",
-  evidenceMode: "witnessed",
-  journalDirectory: "/var/lib/my-agent/allowly-executions",
-  witness: { evidenceDirectory: "/var/lib/my-agent/allowly-evidence/items-read-1" },
-});
-```
-
-The SDK selects the installed configuration by the approved workspace ID and
-checks the pinned key against the witness session before it starts the helper.
-For a local witness with a private CA, `allowly setup witness --witness-ca-cert`
-also pins that CA. The SDK checks its fingerprint before dispatch and passes it
-to the helper for the witness socket only. Provider HTTPS trust is unchanged.
-To use a separately provisioned helper and public key, provide both
-`witness.nativeBinaryPath` and `witness.trustedNotaryKeyPath` with the
-`witness.workspaceId` you expect.
-
-The helper and Allowly-hosted Witness Bridge source live together in
-`allowly_mcp/witness`. The helper wraps unchanged TLSNotary libraries pinned to
-`v0.1.0-alpha.15` / `47aee45b53e06648c1b2ad3689b367b8c923fdec`; it is not a
-separate TLSNotary MCP package. `@allowly/mcp` supports both evidence modes.
-Customer setup installs only the helper, not the hosted witnessing socket.
+`receipt` evidence records the customer runtime's reported HTTP outcome. It is not independent proof of execution or business completion.
 
 ## Author and preview an immutable policy
 
@@ -357,8 +308,6 @@ declared field: AI `{sources, instruction}`, deterministic
 `{source, transform: "email_domain", empty_sources}`, or a boolean
 `{all_of: [direct_boolean_field, ...]}`. Requirements are retained in the whole
 definition digest. Omitted evidence stays omitted. Rules still use OR.
-This source revision uses the maintainer's no-version-bump exception before
-external clients; no registry package is published by this change.
 
 Policy create/get/list/archive and setup preview/publish require a setup/CLI
 credential, not a runtime API key or an agent token. Keep the runtime client
@@ -417,6 +366,32 @@ final decision. Parsing evidence or verifying a signature is not independent
 policy replay; replay needs original retained artifacts and pinned official
 native OPA. This SDK has no parallel TypeScript rule interpreter. Browser
 receipt verification alone cannot replay OPA.
+
+## Report an action with Observe
+
+Use a runtime API key to report a captured action against an exact retained
+policy reference:
+
+```typescript
+const submitted = await allowly.observe.submit({
+  eventId: "operation:1", // Persist this ID for the same captured event.
+  agentId: "agent_demo",
+  action: "email.send",
+  policyRef: retained.policyRef,
+  occurredAt: "2026-10-18T20:00:00Z",
+  reportedExecution: "sent",
+  sources: { body: "Fictional captured message" },
+});
+const current = await allowly.observe.get(submitted.eventId);
+console.log(current.processingStatus, current.assessmentStatus, current.signingStatus);
+```
+
+Observe sends the supplied source text to Allowly for assessment. Submit makes
+one request and requires HTTP 202; status reads require HTTP 200. The SDK does
+not retry submissions or apply fail-open fallbacks. Save the event ID before
+submitting so your application can reconcile an uncertain response.
+Observe reports have `mode: "observe"` and `intervention: "none"`; an
+assessment is not permission to execute and does not block an action.
 
 ## Create an authorization
 
