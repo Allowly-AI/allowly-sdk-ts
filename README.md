@@ -36,6 +36,34 @@ does not replace the named continuation flow. Existing `check` behavior
 and identity-bound authorizations are unchanged. This source addition requires
 a runtime supporting `/v1/agent-check`; it does not publish or deploy it.
 
+## Parse a free-text request
+
+Unreleased source methods require an enabled text-check runtime. Published
+0.9.0 is unchanged. Add reviewed `request_parsing` descriptions to every policy
+action, its resource and every declared field, then call:
+
+```typescript
+const checked = await client.checkTextByAgent({
+  agentName: "Support agent", request: "Reply to ticket:one with a refund of 0 dollars.",
+  idempotencyKey: "ticket-one-initial", estimatedCostMicros: 0,
+});
+const canonical = checked.parse.parsedRequest;
+// Execute only canonical, unchanged, when checked.results[canonical.actions[0]] allows.
+// After approved review with usable authority, recheck that saved parse:
+const resumed = await client.recheckTextByAgent({
+  agentName: "Support agent", parseId: checked.parse.id, idempotencyKey: "ticket-one-resume",
+});
+```
+
+Never parse the prose again to resume approval. Save the parse ID and payload,
+recheck current authority, and execute only an unchanged parsed payload on a fresh
+allow. Both methods require idempotency keys, reject configured identity and
+propagate errors without fallback. Initial `timeoutMs` defaults to 35000;
+an explicit shorter value is honored. Recheck uses `checkTimeoutMs`.
+`TextCheckResponse` extends `CheckResponse` with typed `TextCheckParse`.
+`PolicyRequestParsing` is optional policy metadata; omitting it preserves old
+definition digests. Changing it requires a new policy edition.
+
 ## Confirmation receipts
 
 Confirmation responses expose `receipt`, a pending resolution envelope or

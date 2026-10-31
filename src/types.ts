@@ -539,12 +539,18 @@ export type PolicyEvidenceRequirement =
   | { sources: string[]; instruction: string }
   | { source: string; transform: "email_domain"; empty_sources: string[] }
   | { all_of: string[] };
+export interface PolicyRequestParsing {
+  description: string;
+  resource: string;
+  fields: Record<string, string>;
+}
 export interface PolicyActionEntry {
   policy: BasicPolicy;
   guards: ActionGuards;
   executable_operations: PolicyExecutableOperationGrant[];
   /** Approved extraction requirements; omitted for ordinary policy inputs. */
   evidence?: Record<string, PolicyEvidenceRequirement>;
+  request_parsing?: PolicyRequestParsing;
 }
 export interface PolicyDefinition {
   profile: "allowly.policy.v1";
@@ -671,6 +677,45 @@ export interface CheckResponse {
   /** X-Allowly-Billing-Warning response header, when the workspace is close
    * to a quota/payment boundary. Surface it to operators. */
   billingWarning?: string;
+}
+
+export interface AgentTextCheckRequest {
+  agentName: string;
+  request: string;
+  idempotencyKey: string;
+  sessionId?: string;
+  estimatedCostMicros?: number;
+  clientTimestamp?: Date | string;
+  /** Initial model parsing deadline in milliseconds. Defaults to 35000. */
+  timeoutMs?: number;
+}
+
+export interface AgentTextRecheckRequest {
+  agentName: string;
+  parseId: string;
+  idempotencyKey: string;
+}
+
+export interface ParsedTextRequest {
+  actions: [string];
+  resource: string;
+  context: Record<string, unknown>;
+}
+
+export interface TextCheckParse {
+  id: string;
+  agentName: string;
+  policyRef: PolicyReference;
+  /** Execute only this unchanged payload after its action receives allow. */
+  parsedRequest: ParsedTextRequest;
+  requestSha256: string;
+  model: string;
+  modelVersion: string;
+  expiresAt: string;
+}
+
+export interface TextCheckResponse extends CheckResponse {
+  parse: TextCheckParse;
 }
 
 /** Grant a names-only subset of one exact immutable logical policy edition. */
