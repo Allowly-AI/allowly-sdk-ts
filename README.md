@@ -5,6 +5,37 @@ runs, handle allow/deny/confirm/escalate decisions, and verify signed receipts.
 
 Requires Node.js 20 or newer. This package is ESM-only.
 
+## Check shared permissions by agent name
+
+After an operator explicitly finishes shared-policy setup, use a registered,
+self-reported name to let the runtime resolve the authorization:
+
+```typescript
+import { Allowly } from "@allowly/sdk";
+
+const client = new Allowly({ apiKey: process.env.ALLOWLY_RUNTIME_KEY! });
+const result = await client.checkByAgent({
+  agentName: "Support agent", actions: ["ticket.reply"],
+  resource: "ticket:one", context: { external: true },
+  idempotencyKey: "support-ticket-one",
+});
+const authorizationId = result.authorizationId; // Evidence link, resolved by the server.
+if (result.results["ticket.reply"].decision === "allow") await sendReply();
+```
+
+The name is a routing label, not verified identity. `context.agent_label` is
+reserved: the server records `{name, source: "self_reported"}`. Name routing
+rejects clients configured with `agentToken` or `agentTokenSupplier` and never
+uses availability fallbacks, including configured `fail_open` actions. Stop
+on an error or deny; pause confirm/escalate for review. Save the original named
+request, including its context, resource, cost and session. After approval,
+call `checkByAgent` again with that same name and unchanged inputs, using a
+fresh idempotency key, and execute only a fresh allow. The runtime checks the
+current name assignment; the returned authorization ID links evidence and
+does not replace the named continuation flow. Existing `check` behavior
+and identity-bound authorizations are unchanged. This source addition requires
+a runtime supporting `/v1/agent-check`; it does not publish or deploy it.
+
 ## Confirmation receipts
 
 Confirmation responses expose `receipt`, a pending resolution envelope or

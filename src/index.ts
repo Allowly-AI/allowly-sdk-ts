@@ -16,6 +16,7 @@ export type {
   ObserveSubmitRequest,
   ObserveEventStatus,
   AllowlyOptions,
+  AgentCheckRequest,
   CustomExecutableCreateRequest,
   EnabledExecutableResponse,
   ExecutableOperation,

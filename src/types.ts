@@ -647,6 +647,20 @@ export type ActionCheckResult =
   | ActionCheckResultConfirm
   | ActionCheckResultEscalate;
 
+/** Check shared permissions using a self-reported name, without a client-held grant. */
+export interface AgentCheckRequest {
+  agentName: string;
+  actions: string[];
+  resource?: string;
+  sessionId?: string;
+  estimatedCostMicros?: number;
+  /** agent_label is reserved for the server's self-reported name label. */
+  context?: Record<string, unknown>;
+  wait?: boolean;
+  idempotencyKey?: string;
+  clientTimestamp?: Date | string;
+}
+
 export interface CheckResponse {
   authorizationId: string;
   userId: string | null;

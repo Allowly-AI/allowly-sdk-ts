@@ -77,6 +77,95 @@ function promptStatusBody(kind: "confirmation" | "escalation", overrides: Record
   } as Record<string, unknown>;
 }
 
+describe("Allowly.checkByAgent", () => {
+  it("sends a name-routed request and parses the resolved grant with existing Check rules", async () => {
+    const fetch = makeFetch(200, checkBody("email.read", { decision: "allow", reason: "authorization_granted_action_active", receipt: PENDING_RECEIPT }, { authorization_id: "auth_resolved" }), { "X-Allowly-Billing-Warning": "near_quota" });
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const context = { amount: 12 };
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const result = await client.checkByAgent({ agentName: "Support agent", actions: ["email.read"], resource: "ticket:one", sessionId: "session:one", context, estimatedCostMicros: 0, clientTimestamp: "2026-10-30T00:00:00Z", wait: true, idempotencyKey: "agent-check-one" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls[0][0]).toBe(`${BASE}/v1/agent-check?wait=true`);
+      expect(fetch.mock.calls[0][1].method).toBe("POST");
+      expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ agent_name: "Support agent", actions: ["email.read"], resource: "ticket:one", session_id: "session:one", context: { amount: 12 }, estimated_cost_micros: 0, client_timestamp: "2026-10-30T00:00:00Z" });
+      expect(fetch.mock.calls[0][1].headers).toEqual({ Authorization: "Bearer test-key", "Content-Type": "application/json", "Idempotency-Key": "agent-check-one" });
+      expect(timeout).toHaveBeenCalledWith(6000);
+      expect(context).toEqual({ amount: 12 });
+      expect(result.authorizationId).toBe("auth_resolved");
+      expect(result.results["email.read"].decision).toBe("allow");
+      expect(result.results["email.read"].isFallback).toBe(false);
+      expect(result.billingWarning).toBe("near_quota");
+    } finally { timeout.mockRestore(); }
+  });
+
+  it("accepts the maximum resolved ID in one POST without an idempotency key", async () => {
+    const authorizationId = "x".repeat(128);
+    const fetch = makeFetch(200, checkBody("x", { decision: "allow", reason: "authorization_granted_action_active", receipt: PENDING_RECEIPT }, { authorization_id: authorizationId }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    const result = await client.checkByAgent({ agentName: "Support agent", actions: ["x"] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toBe(`${BASE}/v1/agent-check`);
+    expect(fetch.mock.calls[0][1].method).toBe("POST");
+    expect(fetch.mock.calls[0][1].headers).not.toHaveProperty("Idempotency-Key");
+    expect(result.authorizationId).toBe(authorizationId);
+    expect(result.results.x.decision).toBe("allow");
+  });
+
+  it.each([undefined, null, 17, "", " ", " auth_1", "auth_1 ", "x".repeat(129)])("rejects a malformed resolved ID %j without fallback", async id => {
+    const fetch = makeFetch(200, checkBody("x", { decision: "allow", reason: "authorization_granted_action_active", receipt: PENDING_RECEIPT }, { authorization_id: id }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, fallbackByAction: { x: "fail_open" } });
+    await expect(client.checkByAgent({ agentName: "Support agent", actions: ["x"] })).rejects.toBeInstanceOf(AllowlyProtocolError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["non-object", "actions", "decision", "receipt", "engine"])("rejects malformed %s through the shared Check parser", async fault => {
+    const payload = checkBody("x", { decision: fault === "decision" ? "unknown" : "allow", reason: "authorization_granted_action_active", receipt: fault === "receipt" ? { status: "unknown" } : PENDING_RECEIPT }, fault === "engine" ? { engine_version: "not-an-engine-digest" } : {});
+    if (fault === "actions") payload.results = { another_action: payload.results.x };
+    const client = new Allowly({ ...CLIENT_OPTS, fallbackByAction: { x: "fail_open" }, fetch: makeFetch(200, fault === "non-object" ? [] : payload) });
+    await expect(client.checkByAgent({ agentName: "Support agent", actions: ["x"] })).rejects.toBeInstanceOf(AllowlyProtocolError);
+  });
+
+  it.each([401, 404, 408, 422, 429, 503, 524])("propagates HTTP %i without retry or availability fallback", async status => {
+    const fetch = makeFetch(status, {});
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, fallbackByAction: { x: "fail_open" } });
+    await expect(client.checkByAgent({ agentName: "Support agent", actions: ["x"] })).rejects.toMatchObject({ status });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["abort", "network"])("rejects %s failures rather than returning a synthetic allow", async failure => {
+    const fetch = vi.fn().mockRejectedValue(failure === "abort" ? new DOMException("Timed out", "AbortError") : new TypeError("Network failed"));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, fallbackByAction: { x: "fail_open" } });
+    await expect(client.checkByAgent({ agentName: "Support agent", actions: ["x"] })).rejects.toBeInstanceOf(failure === "abort" ? DOMException : AllowlyTransportError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces its client deadline without availability fallback", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Timed out", "AbortError")), { once: true });
+    }));
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, checkTimeoutMs: 5, fallbackByAction: { x: "fail_open" } });
+    await expect(client.checkByAgent({ agentName: "Support agent", actions: ["x"] })).rejects.toBeInstanceOf(DOMException);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["token", "empty_token", "supplier"])("rejects a configured identity %s before sending or invoking its supplier", async kind => {
+    const supplier = vi.fn().mockResolvedValue("identity-token");
+    const fetch = makeFetch(200, {});
+    const client = new Allowly({ ...CLIENT_OPTS, fetch, ...(kind === "supplier" ? { agentTokenSupplier: supplier } : { agentToken: kind === "empty_token" ? "" : "identity-token" }) });
+    await expect(client.checkByAgent({ agentName: "Support agent", actions: ["x"] })).rejects.toThrow("configured agent identity");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(supplier).not.toHaveBeenCalled();
+  });
+
+  it.each([{ source: "verified" }, null, false, 0, ""])("reserves agent_label for the server even when its value is %j", async agentLabel => {
+    const fetch = makeFetch(200, {});
+    const client = new Allowly({ ...CLIENT_OPTS, fetch });
+    await expect(client.checkByAgent({ agentName: "Support agent", actions: ["x"], context: { agent_label: agentLabel } })).rejects.toThrow("context.agent_label");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("Allowly.check", () => {
   it("rejects insecure base URLs by default", () => {
     expect(() => new Allowly({ apiKey: "test-key", baseUrl: "http://api.example.com" }))

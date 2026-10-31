@@ -18,6 +18,7 @@ import type {
   EnabledExecutableResponse,
   ExecutableEvidenceCapability,
   CheckResponse,
+  AgentCheckRequest,
   FallbackMode,
   AuthorizationCreateRequest,
   AuthorizationCreateResponse,
@@ -318,6 +319,39 @@ export class Allowly {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /** Name routing is self-reported and never uses availability fallbacks or agent identity. */
+  async checkByAgent(req: AgentCheckRequest): Promise<CheckResponse> {
+    if (this.agentToken !== undefined || this.agentTokenSupplier !== undefined) {
+      throw new Error("name-routed checks cannot use configured agent identity");
+    }
+    if (req.context && Object.prototype.hasOwnProperty.call(req.context, "agent_label")) {
+      throw new Error("context.agent_label is reserved for the server");
+    }
+    const { data, headers } = await this.requestWithHeaders<unknown>(
+      "POST", "/v1/agent-check" + (req.wait ? "?wait=true" : ""), {
+        agent_name: req.agentName,
+        actions: req.actions,
+        resource: req.resource,
+        session_id: req.sessionId,
+        estimated_cost_micros: req.estimatedCostMicros,
+        context: req.context ?? {},
+        ...(req.clientTimestamp !== undefined ? { client_timestamp: clientTimestamp(req.clientTimestamp) } : {}),
+      }, {
+        signal: AbortSignal.timeout(req.wait ? Math.max(this.checkTimeoutMs, 6000) : this.checkTimeoutMs),
+        headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
+      },
+    );
+    const raw = requireRecord(data, "check response");
+    const authorizationId = requireString(raw, "authorization_id");
+    if (!authorizationId || authorizationId !== authorizationId.trim() || authorizationId.length > 128) {
+      throw new AllowlyProtocolError("resolved authorization_id must be a nonempty bounded ID");
+    }
+    const response = parseCheckResponse(raw, authorizationId, req.actions);
+    const billingWarning = headers.get("X-Allowly-Billing-Warning");
+    if (billingWarning !== null) response.billingWarning = billingWarning;
+    return response;
   }
 
   private async identityHeaders(
