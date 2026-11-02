@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { AllowlyAPIError, AllowlyProtocolError } from "./error.js";
 import { ResolutionWebhookResource } from "./resolution-webhook.js";
 import { ObserveResource } from "./observe.js";
@@ -20,7 +19,6 @@ import type {
   ExecutableEvidenceCapability,
   CheckResponse,
   AgentCheckRequest,
-  AgentTextCheckRequest, AgentTextRecheckRequest, ParsedTextRequest, TextCheckResponse,
   FallbackMode,
   AuthorizationCreateRequest,
   AuthorizationCreateResponse,
@@ -334,6 +332,7 @@ export class Allowly {
     const { data, headers } = await this.requestWithHeaders<unknown>(
       "POST", "/v1/agent-check" + (req.wait ? "?wait=true" : ""), {
         agent_name: req.agentName,
+        expected_policy_ref: parsePolicyReference(req.expectedPolicyRef),
         actions: req.actions,
         resource: req.resource,
         session_id: req.sessionId,
@@ -351,46 +350,6 @@ export class Allowly {
       throw new AllowlyProtocolError("resolved authorization_id must be a nonempty bounded ID");
     }
     const response = parseCheckResponse(raw, authorizationId, req.actions);
-    const billingWarning = headers.get("X-Allowly-Billing-Warning");
-    if (billingWarning !== null) response.billingWarning = billingWarning;
-    return response;
-  }
-
-  /** Parse one request, then check it. Execute only the returned parsed request on allow. */
-  async checkTextByAgent(req: AgentTextCheckRequest): Promise<TextCheckResponse> {
-    text(req.request, "request", 16_384);
-    if (!req.request.trim() || req.request.includes("\0") || Buffer.byteLength(req.request, "utf8") > 16_384) {
-      throw new Error("request must be nonblank UTF-8 text of at most 16384 bytes without NUL");
-    }
-    return this.textCheck("/v1/agent-check/text", {
-      agent_name: req.agentName, request: req.request, session_id: req.sessionId,
-      estimated_cost_micros: req.estimatedCostMicros,
-      ...(req.clientTimestamp !== undefined ? { client_timestamp: clientTimestamp(req.clientTimestamp) } : {}),
-    }, req.idempotencyKey, req.timeoutMs ?? 35_000,
-    createHash("sha256").update(req.request, "utf8").digest("hex"));
-  }
-
-  /** Recheck the saved parse against current authority without another model call. */
-  async recheckTextByAgent(req: AgentTextRecheckRequest): Promise<TextCheckResponse> {
-    text(req.parseId, "parseId");
-    return this.textCheck(`/v1/agent-check/text/${encodeURIComponent(req.parseId)}`,
-      { agent_name: req.agentName }, req.idempotencyKey, this.checkTimeoutMs, undefined, req.parseId);
-  }
-
-  private async textCheck(
-    path: string, body: Record<string, unknown>, idempotencyKey: string, timeoutMs: number,
-    expectedRequestSha256?: string, expectedParseId?: string,
-  ): Promise<TextCheckResponse> {
-    if (this.agentToken !== undefined || this.agentTokenSupplier !== undefined) {
-      throw new Error("name-routed checks cannot use configured agent identity");
-    }
-    text(body.agent_name, "agentName");
-    text(idempotencyKey, "idempotencyKey");
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("timeoutMs must be positive");
-    const { data, headers } = await this.requestWithHeaders<unknown>("POST", path, body, {
-      signal: AbortSignal.timeout(timeoutMs), headers: { "Idempotency-Key": idempotencyKey },
-    });
-    const response = parseTextCheckResponse(data, body.agent_name as string, expectedRequestSha256, expectedParseId);
     const billingWarning = headers.get("X-Allowly-Billing-Warning");
     if (billingWarning !== null) response.billingWarning = billingWarning;
     return response;
@@ -1176,48 +1135,6 @@ function parseCheckResponse(
         throw new AllowlyProtocolError(`unknown check decision: ${JSON.stringify(decision)}`);
       })
     ) as CheckResponse["results"],
-  };
-}
-
-function parseTextCheckResponse(
-  value: unknown, expectedAgentName: string, expectedRequestSha256?: string, expectedParseId?: string,
-): TextCheckResponse {
-  const raw = requireRecord(value, "text check response");
-  const parsed = exact(document(raw.parse, "parse"), [
-    "id", "agent_name", "policy_ref", "parsed_request", "request_sha256", "model", "model_version", "expires_at",
-  ], "parse");
-  const parseId = text(parsed.id, "parse.id");
-  if (parsed.agent_name !== expectedAgentName || (expectedParseId !== undefined && parseId !== expectedParseId)) {
-    throw new AllowlyProtocolError("text parse does not match the requested agent or parse ID");
-  }
-  const digest = parsed.request_sha256;
-  if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)
-      || (expectedRequestSha256 !== undefined && digest !== expectedRequestSha256)) {
-    throw new AllowlyProtocolError("text parse request_sha256 does not match the request");
-  }
-  const request = exact(parsed.parsed_request, ["actions", "resource", "context"], "parsed_request");
-  const actions = strings(request.actions, "parsed_request.actions", 1, 64) as [string];
-  const resource = text(request.resource, "parsed_request.resource", 256);
-  const context = document(request.context, "parsed_request.context", 4096);
-  if (!resource.trim() || resource.includes("\0") || Object.keys(context).length > 23
-      || Object.entries(context).some(([key, value]) => key.includes("\0")
-        || [value].flat().some(item => (item !== null && !["string", "number", "boolean"].includes(typeof item))
-          || (typeof item === "string" && item.includes("\0"))))) {
-    throw new AllowlyProtocolError("parsed_request requires a valid resource and at most 23 flat scalar/list fields");
-  }
-  const authorizationId = text(raw.authorization_id, "authorization_id");
-  if (authorizationId !== authorizationId.trim()) {
-    throw new AllowlyProtocolError("resolved authorization_id must be a nonempty bounded ID");
-  }
-  return {
-    ...parseCheckResponse(raw, authorizationId, actions),
-    parse: {
-      id: parseId, agentName: expectedAgentName, policyRef: parsePolicyReference(parsed.policy_ref),
-      parsedRequest: { actions, resource, context } satisfies ParsedTextRequest,
-      requestSha256: digest, model: text(parsed.model, "parse.model", 256),
-      modelVersion: text(parsed.model_version, "parse.model_version", 256),
-      expiresAt: statusTimestamp(parsed, "expires_at")!,
-    },
   };
 }
 
