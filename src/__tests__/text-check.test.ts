@@ -80,13 +80,22 @@ describe("text checks", () => {
     await expect(client(vi.fn().mockResolvedValue(http(200, response()))).recheckTextByAgent({ agentName: OPTIONS.agentName, parseId: "parse_other", idempotencyKey: "resume" })).rejects.toBeInstanceOf(AllowlyProtocolError);
   });
 
-  it.each([422, 429, 503])("propagates HTTP %i errors once from both routes", async status => {
-    const code = { 422: "text_parse_incomplete", 429: "text_parse_quota_exceeded", 503: "text_parser_unavailable" }[status];
+  it.each([[422, "text_parse_incomplete"], [429, "text_parse_quota_exceeded"],
+    [503, "text_parser_busy"], [503, "text_parser_unavailable"]] as const)("propagates HTTP %i %s once from both routes", async (status, code) => {
     const fetch = vi.fn().mockResolvedValue(http(status, { error: { code, message: "Check stopped", fields: [{ field: "amount_micros", message: "required" }] } }));
     const api = client(fetch);
-    await expect(api.checkTextByAgent(OPTIONS)).rejects.toMatchObject({ status, fields: [{ field: "amount_micros", message: "required" }] });
-    await expect(api.recheckTextByAgent({ agentName: OPTIONS.agentName, parseId: "parse_one", idempotencyKey: "resume" })).rejects.toBeInstanceOf(AllowlyAPIError);
+    await expect(api.checkTextByAgent(OPTIONS)).rejects.toMatchObject({ name: "AllowlyAPIError", status, code, retryAfterSeconds: undefined,
+      fields: [{ field: "amount_micros", message: "required" }] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const recheck = api.recheckTextByAgent({ agentName: OPTIONS.agentName, parseId: "parse_one", idempotencyKey: "resume" });
+    await expect(recheck).rejects.toBeInstanceOf(AllowlyAPIError);
+    await expect(recheck).rejects.toMatchObject({
+      name: "AllowlyAPIError", status, code, retryAfterSeconds: undefined,
+    });
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.map(call => [call[0], call[1].method])).toEqual([
+      [BASE + "/v1/agent-check/text", "POST"], [BASE + "/v1/agent-check/text/parse_one", "POST"],
+    ]);
   });
 
   it.each(["initial", "recheck"])("never falls back on transport or invokes identity on %s", async method => {
