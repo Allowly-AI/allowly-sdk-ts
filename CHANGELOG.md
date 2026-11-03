@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+
+- Add structured `checkByAgent` checks bound to an exact policy reference,
+  with self-reported name routing, strict validation and no availability fallback.
+- Add `agentInstructions` to fetch plain-text guidance with runtime credentials.
+- Support policy input descriptions. Preserve wire-5 receipt verification.
+
 ## 0.9.0
 
 - Submit captured action reports with `observe.submit` and read their status
