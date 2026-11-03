@@ -38,6 +38,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@allowly/verifier": "^5.0.0"
+    "@allowly/verifier": "^5.1.0"
   }
 }

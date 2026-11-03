@@ -6,6 +6,7 @@
   with self-reported name routing, strict validation and no availability fallback.
 - Add `agentInstructions` to fetch plain-text guidance with runtime credentials.
 - Support policy input descriptions. Preserve wire-5 receipt verification.
+- Require verifier 5.1.0 while preserving existing Observe and evidence support.
 
 ## 0.9.0
 

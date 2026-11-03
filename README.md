@@ -69,7 +69,7 @@ identity or approval. Resolution does not dispatch an action. A standalone
 Check needs a fresh Check with the original authorization. A saved native
 Execute uses Continue, which validates current policy within the same operation.
 
-This SDK uses the published `@allowly/verifier` 5.0.0 and accepts only receipt
+This SDK uses the published `@allowly/verifier` 5.1.0 and accepts only receipt
 wire 5.
 
 ## Confirmation and escalation status
