@@ -653,6 +653,12 @@ export type ActionCheckResult =
   | ActionCheckResultConfirm
   | ActionCheckResultEscalate;
 
+/** Fetch instructions for an exact configured, self-reported name. */
+export interface AgentInstructionsRequest {
+  /** Exact configured, case-sensitive name. */
+  agentName: string;
+}
+
 /** Check shared permissions using a self-reported name, without a client-held grant. */
 export interface AgentCheckRequest {
   agentName: string;

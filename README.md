@@ -5,6 +5,24 @@ runs, handle allow/deny/confirm/escalate decisions, and verify signed receipts.
 
 Requires Node.js 20 or newer. This package is ESM-only.
 
+## Load hosted agent instructions
+
+```typescript
+import { Allowly } from "@allowly/sdk";
+
+const client = new Allowly({ apiKey: process.env.ALLOWLY_RUNTIME_KEY! });
+const instructions = await client.agentInstructions({ agentName: "Support agent" });
+```
+
+Pass the returned text to your agent. It contains the action, resource and field
+schema, descriptions, and exact policy reference for that configured name.
+In both hosted and copied modes, your agent turns free text into structured
+Check JSON; Allowly Check decides permission. Execute only after an `allow`.
+Refresh the instructions after policy changes. This local source method requires
+a runtime supporting `GET /v1/agent-instructions`; earlier published SDKs do not
+gain it. It uses the runtime API key, rejects invalid text responses, and never
+uses an availability fallback.
+
 ## Check shared permissions by agent name
 
 After an operator explicitly finishes shared-policy setup, use a registered,
