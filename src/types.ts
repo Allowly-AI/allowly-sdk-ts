@@ -539,12 +539,18 @@ export type PolicyEvidenceRequirement =
   | { sources: string[]; instruction: string }
   | { source: string; transform: "email_domain"; empty_sources: string[] }
   | { all_of: string[] };
+export interface PolicyInputDescriptions {
+  description: string;
+  resource: string;
+  fields: Record<string, string>;
+}
 export interface PolicyActionEntry {
   policy: BasicPolicy;
   guards: ActionGuards;
   executable_operations: PolicyExecutableOperationGrant[];
   /** Approved extraction requirements; omitted for ordinary policy inputs. */
   evidence?: Record<string, PolicyEvidenceRequirement>;
+  input_descriptions?: PolicyInputDescriptions;
 }
 export interface PolicyDefinition {
   profile: "allowly.policy.v1";
@@ -646,6 +652,28 @@ export type ActionCheckResult =
   | ActionCheckResultDeny
   | ActionCheckResultConfirm
   | ActionCheckResultEscalate;
+
+/** Fetch instructions for an exact configured, self-reported name. */
+export interface AgentInstructionsRequest {
+  /** Exact configured, case-sensitive name. */
+  agentName: string;
+}
+
+/** Check shared permissions using a self-reported name, without a client-held grant. */
+export interface AgentCheckRequest {
+  agentName: string;
+  /** Exact policy edition and digest copied from the generated setup instructions. */
+  expectedPolicyRef: PolicyReference;
+  actions: string[];
+  resource?: string;
+  sessionId?: string;
+  estimatedCostMicros?: number;
+  /** agent_label is reserved for the server's self-reported name label. */
+  context?: Record<string, unknown>;
+  wait?: boolean;
+  idempotencyKey?: string;
+  clientTimestamp?: Date | string;
+}
 
 export interface CheckResponse {
   authorizationId: string;

@@ -28,6 +28,35 @@ function fetchResponse(status: number, value: unknown) {
 function mockFetch(status: number, value: unknown) { return vi.fn().mockResolvedValue(fetchResponse(status, value)); }
 
 describe("canonical policy JSON", () => {
+  it("retains input descriptions and leaves old editions unchanged", () => {
+    const old = definition(), value = definition(), entry = value.actions[0];
+    entry.input_descriptions = { description: "Perform this action", resource: "Exact target ID",
+      fields: Object.fromEntries(Object.keys(entry.policy.fields).map(field => [field, "Exact value for " + field])) };
+    expect(validatePolicyDefinition(old).actions[0]).not.toHaveProperty("input_descriptions");
+    expect(validatePolicyDefinition(value)).toEqual(value);
+    const changed = structuredClone(value);
+    changed.actions[0].input_descriptions!.resource = "A different target meaning";
+    expect(definitionDigest(changed)).not.toBe(definitionDigest(value));
+    expect(definitionDigest(old)).not.toBe(definitionDigest(value));
+  });
+  it.each(["blank", "long", "missing", "extra", "unknown", "null"])("rejects %s input descriptions", fault => {
+    const value = definition(), entry = value.actions[0];
+    const hints: any = { description: "Perform this action", resource: "Exact target ID",
+      fields: Object.fromEntries(Object.keys(entry.policy.fields).map(field => [field, "Exact value"])) };
+    entry.input_descriptions = hints;
+    if (fault === "blank") hints.resource = " ";
+    else if (fault === "long") hints.description = "x".repeat(2049);
+    else if (fault === "missing") delete hints.fields[Object.keys(hints.fields)[0]];
+    else if (fault === "extra") hints.fields.undeclared = "No field";
+    else if (fault === "unknown") hints.extra = true;
+    else (entry as any).input_descriptions = null;
+    expect(() => validatePolicyDefinition(value)).toThrow(AllowlyProtocolError);
+  });
+  it("rejects the removed request_parsing alias", () => {
+    const value = definition();
+    (value.actions[0] as any).request_parsing = { description: "Action", resource: "Target", fields: {} };
+    expect(() => validatePolicyDefinition(value)).toThrow(AllowlyProtocolError);
+  });
   it("retains approved evidence and commits edits while leaving absent metadata absent", () => {
     const old = definition(), value = evidenceDefinition();
     expect(validatePolicyDefinition(old)).toEqual(old);

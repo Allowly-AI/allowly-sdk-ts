@@ -118,7 +118,7 @@ export function validatePolicyDefinition(value: unknown): PolicyDefinition {
   }
   const names = new Set<string>(), operations = new Set<string>();
   for (const item of raw.actions) {
-    const entry = exact(item, ["policy", "guards", "executable_operations"], "policy action", ["evidence"]);
+    const entry = exact(item, ["policy", "guards", "executable_operations"], "policy action", ["evidence", "input_descriptions"]);
     const policy = exact(entry.policy, ["profile", "action", "decision", "target", "fields", "rules"], "basic policy");
     const name = text(policy.action, "policy.action", 64);
     if (names.has(name) || ["allow", "deny", "confirm", "escalate"].includes(name)) {
@@ -136,6 +136,15 @@ export function validatePolicyDefinition(value: unknown): PolicyDefinition {
       }
     }
     if (Object.prototype.hasOwnProperty.call(entry, "evidence")) validateEvidence(fields, entry.evidence);
+    if (Object.prototype.hasOwnProperty.call(entry, "input_descriptions")) {
+      const guidance = exact(entry.input_descriptions, ["description", "resource", "fields"], "input_descriptions");
+      const descriptions = exact(guidance.fields, Object.keys(fields), "input_descriptions.fields");
+      for (const value of [guidance.description, guidance.resource, ...Object.values(descriptions)]) {
+        if (!text(value, "input_descriptions description", 2048).trim()) {
+          throw new AllowlyProtocolError("input_descriptions descriptions must not be blank");
+        }
+      }
+    }
     if (!Array.isArray(policy.rules) || policy.rules.length > 32) throw new AllowlyProtocolError("policy.rules must contain at most 32 ordered rules");
     const ruleIds = new Set<string>();
     for (const item of policy.rules) {

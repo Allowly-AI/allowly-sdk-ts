@@ -18,6 +18,8 @@ import type {
   EnabledExecutableResponse,
   ExecutableEvidenceCapability,
   CheckResponse,
+  AgentCheckRequest,
+  AgentInstructionsRequest,
   FallbackMode,
   AuthorizationCreateRequest,
   AuthorizationCreateResponse,
@@ -133,6 +135,18 @@ export class Allowly {
     return requireString(raw, "status") === "ready";
   }
 
+  /** Fetch plain-text guidance for the exact configured name; never grants permission. */
+  async agentInstructions(req: AgentInstructionsRequest): Promise<string> {
+    if (this.agentToken !== undefined || this.agentTokenSupplier !== undefined) {
+      throw new Error("name-routed instructions cannot use configured agent identity");
+    }
+    const name = text(req.agentName, "agentName");
+    if (name !== name.trim() || name.includes("\0")) throw new Error("agentName must be an exact configured name");
+    return this.request<string>("GET", `/v1/agent-instructions?agent_name=${encodeURIComponent(name)}`, undefined, {
+      headers: { Accept: "text/plain" }, responseFormat: "text",
+    });
+  }
+
   /** @internal */
   async request<T>(
     method: string,
@@ -142,6 +156,7 @@ export class Allowly {
       signal?: AbortSignal;
       headers?: Record<string, string>;
       expectedStatus?: number | readonly number[];
+      responseFormat?: "json" | "text";
     } = {}
   ): Promise<T> {
     const { data } = await this.requestWithHeaders<T>(method, path, body, opts);
@@ -157,6 +172,7 @@ export class Allowly {
       signal?: AbortSignal;
       headers?: Record<string, string>;
       expectedStatus?: number | readonly number[];
+      responseFormat?: "json" | "text";
     } = {}
   ): Promise<{ data: T; headers: Headers }> {
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
@@ -205,6 +221,21 @@ export class Allowly {
       );
     }
     if (res.status === 204) return { data: undefined as T, headers: res.headers };
+
+    if (res.ok && opts.responseFormat === "text") {
+      if (res.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== "text/plain") {
+        throw new AllowlyProtocolError("instructions response must be text/plain");
+      }
+      let instructions: string;
+      try { instructions = new TextDecoder("utf-8", { fatal: true }).decode(await res.arrayBuffer()); }
+      catch { throw new AllowlyProtocolError("instructions response must be UTF-8"); }
+      if (!instructions.trim() || instructions.trimStart().startsWith("<") || sensitiveValues.some(value => instructions.includes(value))) {
+        throw new AllowlyProtocolError("instructions response must contain nonempty plain-text guidance");
+      }
+      try { JSON.parse(instructions); }
+      catch { return { data: instructions as T, headers: res.headers }; }
+      throw new AllowlyProtocolError("instructions response must not be JSON");
+    }
 
     let json: unknown = null;
     try {
@@ -318,6 +349,40 @@ export class Allowly {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /** Name routing is self-reported and never uses availability fallbacks or agent identity. */
+  async checkByAgent(req: AgentCheckRequest): Promise<CheckResponse> {
+    if (this.agentToken !== undefined || this.agentTokenSupplier !== undefined) {
+      throw new Error("name-routed checks cannot use configured agent identity");
+    }
+    if (req.context && Object.prototype.hasOwnProperty.call(req.context, "agent_label")) {
+      throw new Error("context.agent_label is reserved for the server");
+    }
+    const { data, headers } = await this.requestWithHeaders<unknown>(
+      "POST", "/v1/agent-check" + (req.wait ? "?wait=true" : ""), {
+        agent_name: req.agentName,
+        expected_policy_ref: parsePolicyReference(req.expectedPolicyRef),
+        actions: req.actions,
+        resource: req.resource,
+        session_id: req.sessionId,
+        estimated_cost_micros: req.estimatedCostMicros,
+        context: req.context ?? {},
+        ...(req.clientTimestamp !== undefined ? { client_timestamp: clientTimestamp(req.clientTimestamp) } : {}),
+      }, {
+        signal: AbortSignal.timeout(req.wait ? Math.max(this.checkTimeoutMs, 6000) : this.checkTimeoutMs),
+        headers: req.idempotencyKey !== undefined ? { "Idempotency-Key": req.idempotencyKey } : undefined,
+      },
+    );
+    const raw = requireRecord(data, "check response");
+    const authorizationId = requireString(raw, "authorization_id");
+    if (!authorizationId || authorizationId !== authorizationId.trim() || authorizationId.length > 128) {
+      throw new AllowlyProtocolError("resolved authorization_id must be a nonempty bounded ID");
+    }
+    const response = parseCheckResponse(raw, authorizationId, req.actions);
+    const billingWarning = headers.get("X-Allowly-Billing-Warning");
+    if (billingWarning !== null) response.billingWarning = billingWarning;
+    return response;
   }
 
   private async identityHeaders(

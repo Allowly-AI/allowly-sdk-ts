@@ -5,6 +5,58 @@ runs, handle allow/deny/confirm/escalate decisions, and verify signed receipts.
 
 Requires Node.js 20 or newer. This package is ESM-only.
 
+## Load hosted agent instructions
+
+```typescript
+import { Allowly } from "@allowly/sdk";
+
+const client = new Allowly({ apiKey: process.env.ALLOWLY_RUNTIME_KEY! });
+const instructions = await client.agentInstructions({ agentName: "Support agent" });
+```
+
+Pass the returned text to your agent. It contains the action, resource and field
+schema, descriptions, and exact policy reference for that configured name.
+In both hosted and copied modes, your agent turns free text into structured
+Check JSON; Allowly Check decides permission. Execute only after an `allow`.
+Refresh the instructions after policy changes. This method was added in SDK
+0.10.0 and requires a runtime supporting `GET /v1/agent-instructions`; earlier SDKs do not
+gain it. It uses the runtime API key, rejects invalid text responses, and never
+uses an availability fallback.
+
+## Check shared permissions by agent name
+
+After an operator explicitly finishes shared-policy setup, use a registered,
+self-reported name to let the runtime resolve the authorization:
+
+```typescript
+import { Allowly } from "@allowly/sdk";
+
+const client = new Allowly({ apiKey: process.env.ALLOWLY_RUNTIME_KEY! });
+const result = await client.checkByAgent({
+  expectedPolicyRef: { policy_id: "support", policy_version: 1, definition_sha256: "a".repeat(64) },
+  agentName: "Support agent", actions: ["ticket.reply"],
+  resource: "ticket:one", context: { external: true },
+  idempotencyKey: "support-ticket-one",
+});
+const authorizationId = result.authorizationId; // Evidence link, resolved by the server.
+if (result.results["ticket.reply"].decision === "allow") await sendReply();
+```
+
+The name is a routing label, not verified identity. `context.agent_label` is
+reserved: the server records `{name, source: "self_reported"}`. Name routing
+rejects clients configured with `agentToken` or `agentTokenSupplier` and never
+uses availability fallbacks, including configured `fail_open` actions. Stop
+on an error or deny; pause confirm/escalate for review. Save the original named
+request, including `expectedPolicyRef`, context, resource, cost and session. After approval,
+call `checkByAgent` again with that same name and unchanged inputs, using a
+fresh idempotency key, and execute only a fresh allow. The runtime checks the
+current name assignment; the returned authorization ID links evidence and
+does not replace the named continuation flow. Existing `check` behavior
+and identity-bound authorizations are unchanged. The named method requires SDK
+0.10.0 or newer and a runtime supporting `/v1/agent-check`. Copy the exact policy reference from
+the generated setup instructions. A policy change requires a refreshed prompt;
+a mismatched reference stops the request before policy evaluation.
+
 ## Confirmation receipts
 
 Confirmation responses expose `receipt`, a pending resolution envelope or
@@ -17,7 +69,7 @@ identity or approval. Resolution does not dispatch an action. A standalone
 Check needs a fresh Check with the original authorization. A saved native
 Execute uses Continue, which validates current policy within the same operation.
 
-This SDK uses the published `@allowly/verifier` 5.0.0 and accepts only receipt
+This SDK uses the published `@allowly/verifier` 5.1.0 and accepts only receipt
 wire 5.
 
 ## Confirmation and escalation status
